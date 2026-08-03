@@ -43,16 +43,10 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function testNetworkActivationLeavesExistingSitesAvailableWithoutDiscoveryMetadata(): void {
-		self::factory()->blog->create();
-		self::factory()->blog->create();
+		self::createOriginAddressedSite( 'existing-one.example.org' );
+		self::createOriginAddressedSite( 'existing-two.example.org' );
 
-		$activationResult = activate_plugin(
-			plugin_basename( CHARTER_FILE ),
-			'',
-			true
-		);
-
-		self::assertNull( $activationResult );
+		self::activateNetworkWide();
 
 		$siteIds = get_sites(
 			array(
@@ -66,7 +60,6 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 
 			self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $issuer ) );
 			self::assertFalse( SiteIssuerLifecycle::hasIssuer( $issuer ) );
-			self::assertFalse( SiteIssuerLifecycle::publishesDiscoveryFor( $issuer ) );
 		}
 	}
 
@@ -76,8 +69,8 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function testPerSiteActivationPreparesOnlyTheActivatedSite(): void {
-		$activatedSiteId = self::factory()->blog->create();
-		$siblingSiteId   = self::factory()->blog->create();
+		$activatedSiteId = self::createOriginAddressedSite( 'activated.example.org' );
+		$siblingSiteId   = self::createOriginAddressedSite( 'activation-sibling.example.org' );
 		$activatedIssuer = IssuerIdentity::forSite( $activatedSiteId )->issuer();
 		$siblingIssuer   = IssuerIdentity::forSite( $siblingSiteId )->issuer();
 
@@ -88,10 +81,8 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 		self::assertNull( $activationResult );
 		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $activatedIssuer ) );
 		self::assertTrue( SiteIssuerLifecycle::hasIssuer( $activatedIssuer ) );
-		self::assertTrue( SiteIssuerLifecycle::publishesDiscoveryFor( $activatedIssuer ) );
 		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
 		self::assertFalse( SiteIssuerLifecycle::hasIssuer( $siblingIssuer ) );
-		self::assertFalse( SiteIssuerLifecycle::publishesDiscoveryFor( $siblingIssuer ) );
 	}
 
 	/**
@@ -100,25 +91,18 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function testNetworkAdminSelectionPreparesOnlyTheSelectedSite(): void {
-		$selectedSiteId = self::factory()->blog->create();
-		$siblingSiteId  = self::factory()->blog->create();
+		$selectedSiteId = self::createOriginAddressedSite( 'selected.example.org' );
+		$siblingSiteId  = self::createOriginAddressedSite( 'selection-sibling.example.org' );
 		$selectedIssuer = IssuerIdentity::forSite( $selectedSiteId )->issuer();
 		$siblingIssuer  = IssuerIdentity::forSite( $siblingSiteId )->issuer();
 
-		$activationResult = activate_plugin(
-			plugin_basename( CHARTER_FILE ),
-			'',
-			true
-		);
-
-		self::assertNull( $activationResult );
+		self::activateNetworkWide();
 
 		NetworkAdminSelection::prepareSite( $selectedSiteId );
 
 		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $selectedIssuer ) );
-		self::assertTrue( SiteIssuerLifecycle::publishesDiscoveryFor( $selectedIssuer ) );
 		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
-		self::assertFalse( SiteIssuerLifecycle::publishesDiscoveryFor( $siblingIssuer ) );
+		self::assertFalse( SiteIssuerLifecycle::hasIssuer( $siblingIssuer ) );
 	}
 
 	/**
@@ -127,20 +111,13 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function testSiteCreatedAfterNetworkActivationRemainsAvailableWithoutDiscoveryMetadata(): void {
-		$activationResult = activate_plugin(
-			plugin_basename( CHARTER_FILE ),
-			'',
-			true
-		);
+		self::activateNetworkWide();
 
-		self::assertNull( $activationResult );
-
-		$newSiteId = self::factory()->blog->create();
+		$newSiteId = self::createOriginAddressedSite( 'new-site.example.org' );
 		$newIssuer = IssuerIdentity::forSite( $newSiteId )->issuer();
 
 		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $newIssuer ) );
 		self::assertFalse( SiteIssuerLifecycle::hasIssuer( $newIssuer ) );
-		self::assertFalse( SiteIssuerLifecycle::publishesDiscoveryFor( $newIssuer ) );
 	}
 
 	/**
@@ -149,11 +126,32 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function testRecordedVerificationEnablesOnlyTheExactIssuer(): void {
-		$verifiedSiteId = self::factory()->blog->create();
-		$siblingSiteId  = self::factory()->blog->create();
+		$verifiedSiteId = self::createOriginAddressedSite( 'verified.example.org' );
+		$siblingSiteId  = self::createOriginAddressedSite( 'verification-sibling.example.org' );
 		$verifiedIssuer = IssuerIdentity::forSite( $verifiedSiteId )->issuer();
 		$siblingIssuer  = IssuerIdentity::forSite( $siblingSiteId )->issuer();
 
+		self::activateNetworkWide();
+
+		NetworkAdminSelection::prepareSite( $verifiedSiteId );
+		NetworkAdminSelection::prepareSite( $siblingSiteId );
+
+		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $verifiedIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertTrue( SiteIssuerLifecycle::recordVerification( $verifiedIssuer ) );
+		self::assertFalse( SiteIssuerLifecycle::enable( $siblingIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertTrue( SiteIssuerLifecycle::enable( $verifiedIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::ENABLED, SiteIssuerLifecycle::stateFor( $verifiedIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+	}
+
+	/**
+	 * Activates Charter network-wide through WordPress's public lifecycle seam.
+	 *
+	 * @since 0.1.0
+	 */
+	private static function activateNetworkWide(): void {
 		$activationResult = activate_plugin(
 			plugin_basename( CHARTER_FILE ),
 			'',
@@ -161,15 +159,22 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 		);
 
 		self::assertNull( $activationResult );
+	}
 
-		NetworkAdminSelection::prepareSite( $verifiedSiteId );
-		NetworkAdminSelection::prepareSite( $siblingSiteId );
-
-		self::assertTrue( SiteIssuerLifecycle::recordVerification( $verifiedIssuer ) );
-		self::assertFalse( SiteIssuerLifecycle::enable( $siblingIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
-		self::assertTrue( SiteIssuerLifecycle::enable( $verifiedIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::ENABLED, SiteIssuerLifecycle::stateFor( $verifiedIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+	/**
+	 * Creates a supported origin-addressed Multisite site.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $domain The site's public domain.
+	 * @return int The WordPress site locator.
+	 */
+	private static function createOriginAddressedSite( string $domain ): int {
+		return self::factory()->blog->create(
+			array(
+				'domain' => $domain,
+				'path'   => '/',
+			)
+		);
 	}
 }

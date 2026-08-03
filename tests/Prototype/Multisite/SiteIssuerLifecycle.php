@@ -96,18 +96,6 @@ final class SiteIssuerLifecycle {
 	}
 
 	/**
-	 * Reports whether an issuer state publishes discovery metadata.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param string $issuer The exact issuer identifier.
-	 * @return bool Whether discovery is published.
-	 */
-	public static function publishesDiscoveryFor( string $issuer ): bool {
-		return self::hasIssuer( $issuer );
-	}
-
-	/**
 	 * Records manual verification for one exact prepared issuer.
 	 *
 	 * @since 0.1.0
