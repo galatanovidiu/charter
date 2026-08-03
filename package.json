@@ -28,8 +28,8 @@
 		"artifact:verify": "php tools/verify-archive.php build/charter.zip",
 		"artifact:test": "bash tools/test-archive.sh",
 		"audit": "npm audit --audit-level=high",
-		"format": "prettier --write \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
-		"format:check": "prettier --check \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""
+		"format": "prettier --no-error-on-unmatched-pattern --write \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
+		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""
 	},
 	"devDependencies": {
 		"@wordpress/env": "^11.12.0",
