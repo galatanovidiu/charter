@@ -61,7 +61,13 @@ final class DiscoveryHttpAdapter {
 			return;
 		}
 
-		$issuer = IssuerIdentity::forCurrentSite()->issuer();
+		$identity = IssuerIdentity::forCurrentSite();
+
+		if ( ! $identity->isBareOriginForV1() ) {
+			return;
+		}
+
+		$issuer = $identity->issuer();
 
 		if ( SiteIssuerLifecycle::AVAILABLE === SiteIssuerLifecycle::stateFor( $issuer ) ) {
 			return;

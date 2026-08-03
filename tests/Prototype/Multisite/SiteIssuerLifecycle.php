@@ -138,6 +138,19 @@ final class SiteIssuerLifecycle {
 	}
 
 	/**
+	 * Reports whether one exact identity may execute a v1 operation.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param IssuerIdentity $identity The explicit site issuer identity.
+	 * @return bool Whether the issuer is both supported and Enabled.
+	 */
+	public static function isEnabledForV1Operation( IssuerIdentity $identity ): bool {
+		return $identity->isBareOriginForV1()
+			&& self::ENABLED === self::stateFor( $identity->issuer() );
+	}
+
+	/**
 	 * Clears all disposable proof records between integration tests.
 	 *
 	 * @since 0.1.0

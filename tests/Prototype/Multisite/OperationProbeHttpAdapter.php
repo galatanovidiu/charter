@@ -50,8 +50,9 @@ final class OperationProbeHttpAdapter {
 			return;
 		}
 
-		$issuer = IssuerIdentity::forCurrentSite()->issuer();
-		$state  = SiteIssuerLifecycle::stateFor( $issuer );
+		$identity = IssuerIdentity::forCurrentSite();
+		$issuer   = $identity->issuer();
+		$state    = SiteIssuerLifecycle::stateFor( $issuer );
 
 		if ( SiteIssuerLifecycle::AVAILABLE === $state ) {
 			return;
@@ -59,7 +60,7 @@ final class OperationProbeHttpAdapter {
 
 		header( 'Content-Type: application/json; charset=UTF-8' );
 
-		if ( SiteIssuerLifecycle::ENABLED !== $state ) {
+		if ( ! SiteIssuerLifecycle::isEnabledForV1Operation( $identity ) ) {
 			status_header( 403 );
 			echo wp_json_encode( array( 'error' => 'issuer_not_enabled' ) );
 			exit;

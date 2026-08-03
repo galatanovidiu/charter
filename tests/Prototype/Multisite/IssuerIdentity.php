@@ -60,6 +60,19 @@ final class IssuerIdentity {
 	}
 
 	/**
+	 * Constructs an identity from one explicitly established canonical issuer.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int    $siteId The WordPress site locator.
+	 * @param string $issuer The opaque canonical issuer URL.
+	 * @return self The explicit site issuer identity.
+	 */
+	public static function forCanonicalIssuer( int $siteId, string $issuer ): self {
+		return new self( $siteId, $issuer );
+	}
+
+	/**
 	 * Constructs the canonical identity for the current WordPress site.
 	 *
 	 * @since 0.1.0
@@ -90,5 +103,22 @@ final class IssuerIdentity {
 	 */
 	public function issuer(): string {
 		return $this->issuer;
+	}
+
+	/**
+	 * Reports whether the exact canonical issuer is a v1 bare origin.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return bool Whether the issuer has only scheme, host, and optional port.
+	 */
+	public function isBareOriginForV1(): bool {
+		$parts = wp_parse_url( $this->issuer );
+
+		if ( ! is_array( $parts ) || ! isset( $parts['scheme'], $parts['host'] ) ) {
+			return false;
+		}
+
+		return array() === array_diff( array_keys( $parts ), array( 'scheme', 'host', 'port' ) );
 	}
 }
