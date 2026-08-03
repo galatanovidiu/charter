@@ -1,0 +1,7 @@
+.agents/
+build/
+node_modules/
+vendor/
+tests/_output/
+LICENSE
+readme.txt

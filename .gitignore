@@ -1,0 +1,13 @@
+/.DS_Store
+/.codex/
+/.scratch/
+/.wp-env.override.json
+/.wp-env.slice0.override.json
+/.wp-env.test.override.json
+/build/
+/node_modules/
+/vendor/
+/tests/_output/*
+!/tests/_output/.gitkeep
+/.phpunit.result.cache
+*.local.md

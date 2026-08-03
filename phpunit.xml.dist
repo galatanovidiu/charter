@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+	colors="true"
+	beStrictAboutChangesToGlobalState="true"
+	beStrictAboutOutputDuringTests="true"
+	beStrictAboutTestsThatDoNotTestAnything="true"
+	cacheResultFile="tests/_output/.phpunit.result.cache"
+	failOnRisky="true"
+	failOnWarning="true"
+>
+	<testsuites>
+		<testsuite name="unit">
+			<directory suffix="Test.php">tests/Unit</directory>
+		</testsuite>
+		<testsuite name="integration">
+			<directory suffix="Test.php">tests/Integration</directory>
+			<exclude>tests/Integration/Multisite</exclude>
+		</testsuite>
+		<testsuite name="slice0-multisite">
+			<file>tests/Integration/PluginBootstrapTest.php</file>
+			<directory suffix="Test.php">tests/Integration/Multisite</directory>
+		</testsuite>
+	</testsuites>
+</phpunit>

@@ -1,0 +1,17 @@
+{
+	"$schema": "https://schemas.wp.org/trunk/wp-env.json",
+	"core": null,
+	"phpVersion": "8.4",
+	"port": 8891,
+	"testsEnvironment": false,
+	"multisite": true,
+	"config": {
+		"FS_METHOD": "direct",
+		"WP_DEBUG": true,
+		"WP_DEBUG_LOG": "/var/www/html/wp-content/plugins/charter/tests/_output/slice0-debug.log",
+		"WP_DEVELOPMENT_MODE": "plugin"
+	},
+	"mappings": {
+		"wp-content/plugins/charter": "."
+	}
+}

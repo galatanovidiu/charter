@@ -1,0 +1,43 @@
+{
+	"name": "charter",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Development and release tooling for the Charter WordPress plugin.",
+	"engines": {
+		"node": ">=24 <25",
+		"npm": ">=11"
+	},
+	"scripts": {
+		"wp-env": "wp-env",
+		"env:start": "wp-env start --auto-port",
+		"env:stop": "wp-env stop",
+		"env:clean": "wp-env cleanup",
+		"test:integration:start": "wp-env start --config=.wp-env.test.json --auto-port",
+		"test:integration": "wp-env run cli --config=.wp-env.test.json --env-cwd=wp-content/plugins/charter php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=integration",
+		"test:integration:logs": "wp-env logs --config=.wp-env.test.json --no-watch",
+		"test:integration:stop": "wp-env stop --config=.wp-env.test.json",
+		"test:integration:ci": "bash tools/run-integration-tests.sh",
+		"test:slice0:multisite:start": "wp-env start --config=.wp-env.slice0.json --auto-port",
+		"test:slice0:multisite:prepare": "wp-env run cli --config=.wp-env.slice0.json bash -c 'for constant in MULTISITE SUBDOMAIN_INSTALL DOMAIN_CURRENT_SITE PATH_CURRENT_SITE SITE_ID_CURRENT_SITE BLOG_ID_CURRENT_SITE; do wp config delete \"$constant\" --config-file=/wordpress-phpunit/wp-tests-config.php; done'",
+		"test:slice0:multisite:version": "wp-env run cli --config=.wp-env.slice0.json wp core version",
+		"test:slice0:multisite": "wp-env run cli --config=.wp-env.slice0.json --env-cwd=wp-content/plugins/charter env WP_MULTISITE=1 php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=slice0-multisite",
+		"test:slice0:multisite:logs": "wp-env logs --config=.wp-env.slice0.json --no-watch",
+		"test:slice0:multisite:destroy": "wp-env destroy --config=.wp-env.slice0.json --force",
+		"test:slice0:multisite:ci": "bash tools/run-slice0-multisite-tests.sh",
+		"build:zip": "bash tools/build-zip.sh",
+		"artifact:verify": "php tools/verify-archive.php build/charter.zip",
+		"artifact:test": "bash tools/test-archive.sh",
+		"audit": "npm audit --audit-level=high",
+		"format": "prettier --write \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
+		"format:check": "prettier --check \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""
+	},
+	"devDependencies": {
+		"@wordpress/env": "^11.12.0",
+		"@wordpress/prettier-config": "^4.52.0",
+		"prettier": "^3.9.0"
+	},
+	"overrides": {
+		"adm-zip": "0.6.0",
+		"rimraf": "6.1.3"
+	}
+}

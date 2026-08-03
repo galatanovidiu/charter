@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<ruleset name="Charter">
+	<description>WordPress coding standards for Charter.</description>
+
+	<file>charter.php</file>
+	<file>src</file>
+	<file>tests</file>
+
+	<exclude-pattern>tests/_output/*</exclude-pattern>
+	<exclude-pattern>vendor/*</exclude-pattern>
+
+	<arg name="basepath" value="."/>
+	<arg name="colors"/>
+	<arg name="extensions" value="php"/>
+	<arg value="sp"/>
+
+	<config name="minimum_supported_wp_version" value="6.9"/>
+	<config name="testVersion" value="8.4-"/>
+	<config name="text_domain" value="charter"/>
+	<config name="prefixes" value="charter,CHARTER"/>
+
+	<rule ref="WordPress-Extra">
+		<exclude name="WordPress.Files.FileName.InvalidClassFileName"/>
+		<exclude name="WordPress.Files.FileName.NotHyphenatedLowercase"/>
+		<exclude name="WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedNamespaceFound"/>
+		<exclude name="WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid"/>
+		<exclude name="WordPress.NamingConventions.ValidVariableName.PropertyNotSnakeCase"/>
+		<exclude name="WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase"/>
+		<exclude name="WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase"/>
+	</rule>
+	<rule ref="WordPress-Docs"/>
+</ruleset>

@@ -1,0 +1,12 @@
+parameters:
+	level: max
+	phpVersion: 80400
+	paths:
+		- charter.php
+		- src
+		- tests/Unit
+		- tests/bootstrap-unit.php
+	bootstrapFiles:
+		- phpstan-bootstrap.php
+	tmpDir: tests/_output/phpstan
+	reportUnmatchedIgnoredErrors: true
