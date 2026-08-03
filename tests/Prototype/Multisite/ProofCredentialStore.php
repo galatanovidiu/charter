@@ -40,6 +40,7 @@ final class ProofCredentialStore {
 	public static function issue( string $credential, IssuerIdentity $identity, string $resourceIdentifier ): void {
 		$records                = self::records();
 		$records[ $credential ] = array(
+			'site_id'  => $identity->siteId(),
 			'issuer'   => $identity->issuer(),
 			'resource' => $resourceIdentifier,
 		);
@@ -62,8 +63,30 @@ final class ProofCredentialStore {
 
 		return is_array( $record )
 			&& SiteIssuerLifecycle::isEnabledForV1Operation( $identity )
-			&& ( $record['issuer'] ?? null ) === $identity->issuer()
-			&& ( $record['resource'] ?? null ) === $resourceIdentifier;
+			&& $record['issuer'] === $identity->issuer()
+			&& $record['resource'] === $resourceIdentifier;
+	}
+
+	/**
+	 * Removes every proof credential located by one deleted WordPress site.
+	 *
+	 * The site ID is cleanup data only. Credential acceptance remains bound to
+	 * exact issuer and resource strings.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $siteId The deleted non-identity WordPress site locator.
+	 */
+	public static function deleteForSite( int $siteId ): void {
+		$records = self::records();
+
+		foreach ( $records as $credential => $record ) {
+			if ( $siteId === $record['site_id'] ) {
+				unset( $records[ $credential ] );
+			}
+		}
+
+		update_network_option( null, self::STORE_OPTION, $records );
 	}
 
 	/**
@@ -80,11 +103,35 @@ final class ProofCredentialStore {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, array{issuer: string, resource: string}> The proof records.
+	 * @return array<string, array{site_id: int, issuer: string, resource: string}> The proof records.
 	 */
 	private static function records(): array {
 		$records = get_network_option( null, self::STORE_OPTION, array() );
 
-		return is_array( $records ) ? $records : array();
+		if ( ! is_array( $records ) ) {
+			return array();
+		}
+
+		$validRecords = array();
+
+		foreach ( $records as $credential => $record ) {
+			if (
+				! is_string( $credential )
+				|| ! is_array( $record )
+				|| ! is_int( $record['site_id'] ?? null )
+				|| ! is_string( $record['issuer'] ?? null )
+				|| ! is_string( $record['resource'] ?? null )
+			) {
+				continue;
+			}
+
+			$validRecords[ $credential ] = array(
+				'site_id'  => $record['site_id'],
+				'issuer'   => $record['issuer'],
+				'resource' => $record['resource'],
+			);
+		}
+
+		return $validRecords;
 	}
 }

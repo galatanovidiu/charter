@@ -12,7 +12,9 @@ namespace GalatanOvidiu\Charter\Tests\Integration\Multisite;
 use GalatanOvidiu\Charter\Tests\Prototype\Multisite\ActivationLifecycle;
 use GalatanOvidiu\Charter\Tests\Prototype\Multisite\IssuerIdentity;
 use GalatanOvidiu\Charter\Tests\Prototype\Multisite\NetworkAdminSelection;
+use GalatanOvidiu\Charter\Tests\Prototype\Multisite\SiteDeletionLifecycle;
 use GalatanOvidiu\Charter\Tests\Prototype\Multisite\SiteIssuerLifecycle;
+use WP_Site;
 use WP_UnitTest_Factory;
 use WP_UnitTestCase;
 
@@ -72,7 +74,9 @@ final class DiscoveryHttpTest extends WP_UnitTestCase {
 		deactivate_plugins( plugin_basename( CHARTER_FILE ), true, true );
 
 		foreach ( self::$siteIds as $siteId ) {
-			wpmu_delete_blog( $siteId, true );
+			if ( get_site( $siteId ) instanceof WP_Site ) {
+				wpmu_delete_blog( $siteId, true );
+			}
 		}
 
 		self::$siteIds = array();
@@ -89,6 +93,7 @@ final class DiscoveryHttpTest extends WP_UnitTestCase {
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
 		ActivationLifecycle::register( CHARTER_FILE );
+		SiteDeletionLifecycle::register();
 		SiteIssuerLifecycle::resetProof();
 		deactivate_plugins( plugin_basename( CHARTER_FILE ), true, true );
 
@@ -282,6 +287,52 @@ final class DiscoveryHttpTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Verifies that deleting one site leaves sibling HTTP behavior unchanged.
+	 *
+	 * @since 0.1.0
+	 */
+	public function testDeletingEnabledSiteLeavesSiblingDiscoveryAndOperationUnchanged(): void {
+		$deletedSiteId = self::siteId( 'deleted-http-sibling' );
+		$siblingSiteId = self::siteId( 'surviving-http-sibling' );
+		$deletedIssuer = IssuerIdentity::forSite( $deletedSiteId )->issuer();
+		$siblingIssuer = IssuerIdentity::forSite( $siblingSiteId )->issuer();
+		$discoveryPath = '/.well-known/oauth-authorization-server';
+		$operationPath = '/charter-slice0-operation-probe';
+
+		self::activateNetworkWide();
+		NetworkAdminSelection::prepareSite( $deletedSiteId );
+		NetworkAdminSelection::prepareSite( $siblingSiteId );
+		self::assertTrue( SiteIssuerLifecycle::recordVerification( $deletedIssuer ) );
+		self::assertTrue( SiteIssuerLifecycle::recordVerification( $siblingIssuer ) );
+		self::assertTrue( SiteIssuerLifecycle::enable( $deletedIssuer ) );
+		self::assertTrue( SiteIssuerLifecycle::enable( $siblingIssuer ) );
+		self::commit_transaction();
+
+		$discoveryBefore = self::requestIssuerPath( $siblingIssuer, $discoveryPath );
+		$operationBefore = self::requestIssuerPath( $siblingIssuer, $operationPath );
+		$deletionResult  = wp_delete_site( $deletedSiteId );
+
+		self::commit_transaction();
+
+		$discoveryAfter = self::requestIssuerPath( $siblingIssuer, $discoveryPath );
+		$operationAfter = self::requestIssuerPath( $siblingIssuer, $operationPath );
+
+		self::assertInstanceOf( WP_Site::class, $deletionResult );
+		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $deletedIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::ENABLED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertNotWPError( $discoveryBefore );
+		self::assertNotWPError( $operationBefore );
+		self::assertNotWPError( $discoveryAfter );
+		self::assertNotWPError( $operationAfter );
+		self::assertSame( 200, wp_remote_retrieve_response_code( $discoveryBefore ) );
+		self::assertSame( 200, wp_remote_retrieve_response_code( $operationBefore ) );
+		self::assertSame( 200, wp_remote_retrieve_response_code( $discoveryAfter ) );
+		self::assertSame( 200, wp_remote_retrieve_response_code( $operationAfter ) );
+		self::assertSame( wp_remote_retrieve_body( $discoveryBefore ), wp_remote_retrieve_body( $discoveryAfter ) );
+		self::assertSame( wp_remote_retrieve_body( $operationBefore ), wp_remote_retrieve_body( $operationAfter ) );
+	}
+
+	/**
 	 * Activates Charter network-wide through WordPress's public lifecycle seam.
 	 *
 	 * @since 0.1.0
@@ -333,14 +384,16 @@ final class DiscoveryHttpTest extends WP_UnitTestCase {
 	 */
 	private static function siteDomains(): array {
 		return array(
-			'available'         => 'available-discovery.example.org',
-			'prepared'          => 'prepared-discovery.example.org',
-			'prepared-probe'    => 'prepared-probe.example.org',
-			'verified'          => 'verified-operation.example.org',
-			'unverified'        => 'unverified-operation.example.org',
-			'enabled-sibling'   => 'enabled-sibling.example.org',
-			'prepared-sibling'  => 'prepared-sibling.example.org',
-			'available-sibling' => 'available-sibling.example.org',
+			'available'              => 'available-discovery.example.org',
+			'prepared'               => 'prepared-discovery.example.org',
+			'prepared-probe'         => 'prepared-probe.example.org',
+			'verified'               => 'verified-operation.example.org',
+			'unverified'             => 'unverified-operation.example.org',
+			'enabled-sibling'        => 'enabled-sibling.example.org',
+			'prepared-sibling'       => 'prepared-sibling.example.org',
+			'available-sibling'      => 'available-sibling.example.org',
+			'deleted-http-sibling'   => 'deleted-http-sibling.example.org',
+			'surviving-http-sibling' => 'surviving-http-sibling.example.org',
 		);
 	}
 

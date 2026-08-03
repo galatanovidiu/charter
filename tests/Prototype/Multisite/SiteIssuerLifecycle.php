@@ -197,6 +197,28 @@ final class SiteIssuerLifecycle {
 	}
 
 	/**
+	 * Removes every issuer record located by one deleted WordPress site.
+	 *
+	 * The site ID is used only as a cleanup locator. Issuer-addressed lookups
+	 * remain keyed by the exact canonical issuer.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $siteId The deleted non-identity WordPress site locator.
+	 */
+	public static function deleteForSite( int $siteId ): void {
+		$records = self::records();
+
+		foreach ( $records as $issuer => $record ) {
+			if ( $siteId === $record['site_id'] ) {
+				unset( $records[ $issuer ] );
+			}
+		}
+
+		update_network_option( null, self::STORE_OPTION, $records );
+	}
+
+	/**
 	 * Clears all disposable proof records between integration tests.
 	 *
 	 * @since 0.1.0
@@ -215,6 +237,34 @@ final class SiteIssuerLifecycle {
 	private static function records(): array {
 		$records = get_network_option( null, self::STORE_OPTION, array() );
 
-		return is_array( $records ) ? $records : array();
+		if ( ! is_array( $records ) ) {
+			return array();
+		}
+
+		$validRecords = array();
+
+		foreach ( $records as $issuer => $record ) {
+			if (
+				! is_string( $issuer )
+				|| ! is_array( $record )
+				|| ! is_int( $record['site_id'] ?? null )
+				|| ! is_string( $record['state'] ?? null )
+				|| ! is_bool( $record['is_current'] ?? null )
+			) {
+				continue;
+			}
+
+			$validRecords[ $issuer ] = array(
+				'site_id'    => $record['site_id'],
+				'state'      => $record['state'],
+				'is_current' => $record['is_current'],
+			);
+
+			if ( is_string( $record['verified_issuer'] ?? null ) ) {
+				$validRecords[ $issuer ]['verified_issuer'] = $record['verified_issuer'];
+			}
+		}
+
+		return $validRecords;
 	}
 }
