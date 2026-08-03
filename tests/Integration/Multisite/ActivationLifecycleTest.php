@@ -134,16 +134,16 @@ final class ActivationLifecycleTest extends WP_UnitTestCase {
 		self::activateNetworkWide();
 
 		NetworkAdminSelection::prepareSite( $verifiedSiteId );
-		NetworkAdminSelection::prepareSite( $siblingSiteId );
 
 		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $verifiedIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
 		self::assertTrue( SiteIssuerLifecycle::recordVerification( $verifiedIssuer ) );
 		self::assertFalse( SiteIssuerLifecycle::enable( $siblingIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertFalse( SiteIssuerLifecycle::hasIssuer( $siblingIssuer ) );
 		self::assertTrue( SiteIssuerLifecycle::enable( $verifiedIssuer ) );
 		self::assertSame( SiteIssuerLifecycle::ENABLED, SiteIssuerLifecycle::stateFor( $verifiedIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $siblingIssuer ) );
 	}
 
 	/**
