@@ -61,19 +61,28 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 	 * @since 0.1.0
 	 */
 	public function testDomainMappedOriginIsIndependentFromInternalWordPressAddress(): void {
-		$siteId         = self::createOriginAddressedSite( 'internal.example.test' );
-		$internalIssuer = IssuerIdentity::forSite( $siteId )->issuer();
+		$siteId           = self::createOriginAddressedSite( 'internal.example.test' );
+		$internalIdentity = IssuerIdentity::forSite( $siteId );
+		$internalIssuer   = $internalIdentity->issuer();
+
+		self::enableIdentity( $internalIdentity );
+		ProofCredentialStore::issue( 'internal-credential', $internalIdentity, $internalIssuer );
 
 		update_blog_option( $siteId, 'home', 'https://mapped.example.org' );
-		$mappedIssuer = IssuerIdentity::forSite( $siteId )->issuer();
+		$mappedIdentity = IssuerIdentity::forSite( $siteId );
+		$mappedIssuer   = $mappedIdentity->issuer();
 
-		NetworkAdminSelection::prepareSite( $siteId );
+		SiteIssuerLifecycle::prepare( $mappedIdentity );
+		$currentIdentity = SiteIssuerLifecycle::identityForSite( $siteId );
 
 		self::assertSame( 'https://mapped.example.org', $mappedIssuer );
 		self::assertNotSame( $internalIssuer, $mappedIssuer );
+		self::assertInstanceOf( IssuerIdentity::class, $currentIdentity );
+		self::assertSame( $mappedIssuer, $currentIdentity->issuer() );
 		self::assertSame( SiteIssuerLifecycle::PREPARED, SiteIssuerLifecycle::stateFor( $mappedIssuer ) );
-		self::assertSame( SiteIssuerLifecycle::AVAILABLE, SiteIssuerLifecycle::stateFor( $internalIssuer ) );
-		self::assertFalse( SiteIssuerLifecycle::hasIssuer( $internalIssuer ) );
+		self::assertSame( SiteIssuerLifecycle::ENABLED, SiteIssuerLifecycle::stateFor( $internalIssuer ) );
+		self::assertFalse( SiteIssuerLifecycle::isEnabledForV1Operation( $internalIdentity ) );
+		self::assertFalse( ProofCredentialStore::accepts( 'internal-credential', $internalIdentity, $internalIssuer ) );
 	}
 
 	/**
@@ -192,6 +201,7 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 
 		self::enableIdentity( $identity );
 		ProofCredentialStore::issue( 'host-proof-credential', $identity, $issuer );
+		update_blog_option( $siteId, 'home', 'https://changed-wordpress-home.example.net' );
 
 		$_SERVER['HTTP_HOST']              = 'attacker.example.net';
 		$_SERVER['SERVER_NAME']            = 'attacker.example.net';
@@ -200,8 +210,9 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 		switch_to_blog( $siteId );
 
 		try {
-			$requestIdentity = IssuerIdentity::forCurrentSite();
+			$requestIdentity = SiteIssuerLifecycle::identityForSite( IssuerIdentity::currentSiteLocator() );
 
+			self::assertInstanceOf( IssuerIdentity::class, $requestIdentity );
 			self::assertSame( $issuer, $requestIdentity->issuer() );
 			self::assertSame( SiteIssuerLifecycle::ENABLED, SiteIssuerLifecycle::stateFor( $requestIdentity->issuer() ) );
 			self::assertTrue( ProofCredentialStore::accepts( 'host-proof-credential', $requestIdentity, $issuer ) );
@@ -272,7 +283,7 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 	private static function identityBoundaryScanFiles(): array {
 		$files = array( CHARTER_TEST_ROOT . '/charter.php' );
 
-		foreach ( array( '/src', '/tests/Prototype/Multisite' ) as $directory ) {
+		foreach ( array( '/src', '/tests/Prototype/Multisite', '/tests/fixtures/mu-plugins', '/tests/Integration/Multisite' ) as $directory ) {
 			$iterator = new \RecursiveIteratorIterator(
 				new \RecursiveDirectoryIterator(
 					CHARTER_TEST_ROOT . $directory,

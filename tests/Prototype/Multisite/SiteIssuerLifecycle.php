@@ -60,10 +60,20 @@ final class SiteIssuerLifecycle {
 	 * @param IssuerIdentity $identity The explicit site issuer identity.
 	 */
 	public static function prepare( IssuerIdentity $identity ): void {
-		$records                        = self::records();
+		$records = self::records();
+
+		foreach ( $records as &$record ) {
+			if ( $identity->siteId() === $record['site_id'] ) {
+				$record['is_current'] = false;
+			}
+		}
+
+		unset( $record );
+
 		$records[ $identity->issuer() ] = array(
-			'site_id' => $identity->siteId(),
-			'state'   => self::PREPARED,
+			'site_id'    => $identity->siteId(),
+			'state'      => self::PREPARED,
+			'is_current' => true,
 		);
 
 		update_network_option( null, self::STORE_OPTION, $records );
@@ -93,6 +103,27 @@ final class SiteIssuerLifecycle {
 	 */
 	public static function hasIssuer( string $issuer ): bool {
 		return array_key_exists( $issuer, self::records() );
+	}
+
+	/**
+	 * Resolves the current stored identity for one WordPress site locator.
+	 *
+	 * The locator selects identity configuration only. State and credential
+	 * lookups remain addressed by the returned canonical issuer.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param int $siteId The non-identity WordPress site locator.
+	 * @return IssuerIdentity|null The current stored identity, when prepared.
+	 */
+	public static function identityForSite( int $siteId ): ?IssuerIdentity {
+		foreach ( self::records() as $issuer => $record ) {
+			if ( $siteId === $record['site_id'] && true === $record['is_current'] ) {
+				return IssuerIdentity::forCanonicalIssuer( $siteId, $issuer );
+			}
+		}
+
+		return null;
 	}
 
 	/**
@@ -146,7 +177,11 @@ final class SiteIssuerLifecycle {
 	 * @return bool Whether the issuer is both supported and Enabled.
 	 */
 	public static function isEnabledForV1Operation( IssuerIdentity $identity ): bool {
-		return $identity->isBareOriginForV1()
+		$currentIdentity = self::identityForSite( $identity->siteId() );
+
+		return $currentIdentity instanceof IssuerIdentity
+			&& $currentIdentity->issuer() === $identity->issuer()
+			&& $identity->isBareOriginForV1()
 			&& self::ENABLED === self::stateFor( $identity->issuer() );
 	}
 
@@ -164,7 +199,7 @@ final class SiteIssuerLifecycle {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, array{site_id: int, state: string, verified_issuer?: string}> The proof records.
+	 * @return array<string, array{site_id: int, state: string, is_current: bool, verified_issuer?: string}> The proof records.
 	 */
 	private static function records(): array {
 		$records = get_network_option( null, self::STORE_OPTION, array() );

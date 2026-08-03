@@ -84,6 +84,17 @@ final class IssuerIdentity {
 	}
 
 	/**
+	 * Returns the current non-identity WordPress site locator.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return int The current WordPress site locator.
+	 */
+	public static function currentSiteLocator(): int {
+		return get_current_blog_id();
+	}
+
+	/**
 	 * Returns the non-identity WordPress site locator.
 	 *
 	 * @since 0.1.0

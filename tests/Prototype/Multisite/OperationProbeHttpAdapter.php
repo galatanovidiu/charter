@@ -50,9 +50,14 @@ final class OperationProbeHttpAdapter {
 			return;
 		}
 
-		$identity = IssuerIdentity::forCurrentSite();
-		$issuer   = $identity->issuer();
-		$state    = SiteIssuerLifecycle::stateFor( $issuer );
+		$identity = SiteIssuerLifecycle::identityForSite( IssuerIdentity::currentSiteLocator() );
+
+		if ( ! $identity instanceof IssuerIdentity ) {
+			return;
+		}
+
+		$issuer = $identity->issuer();
+		$state  = SiteIssuerLifecycle::stateFor( $issuer );
 
 		if ( SiteIssuerLifecycle::AVAILABLE === $state ) {
 			return;
