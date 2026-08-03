@@ -50,7 +50,7 @@ final class OperationProbeHttpAdapter {
 			return;
 		}
 
-		$identity = SiteIssuerLifecycle::identityForSite( IssuerIdentity::currentSiteLocator() );
+		$identity = SiteIssuerLifecycle::identityForCurrentSite();
 
 		if ( ! $identity instanceof IssuerIdentity ) {
 			return;

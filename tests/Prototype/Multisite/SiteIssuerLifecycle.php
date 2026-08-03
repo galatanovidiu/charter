@@ -127,6 +127,17 @@ final class SiteIssuerLifecycle {
 	}
 
 	/**
+	 * Resolves the stored identity for the current WordPress request site.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return IssuerIdentity|null The current stored identity, when prepared.
+	 */
+	public static function identityForCurrentSite(): ?IssuerIdentity {
+		return self::identityForSite( IssuerIdentity::currentSiteLocator() );
+	}
+
+	/**
 	 * Records manual verification for one exact prepared issuer.
 	 *
 	 * @since 0.1.0

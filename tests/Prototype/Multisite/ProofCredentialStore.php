@@ -40,7 +40,6 @@ final class ProofCredentialStore {
 	public static function issue( string $credential, IssuerIdentity $identity, string $resourceIdentifier ): void {
 		$records                = self::records();
 		$records[ $credential ] = array(
-			'site_id'  => $identity->siteId(),
 			'issuer'   => $identity->issuer(),
 			'resource' => $resourceIdentifier,
 		);
@@ -81,7 +80,7 @@ final class ProofCredentialStore {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @return array<string, array{site_id: int, issuer: string, resource: string}> The proof records.
+	 * @return array<string, array{issuer: string, resource: string}> The proof records.
 	 */
 	private static function records(): array {
 		$records = get_network_option( null, self::STORE_OPTION, array() );
