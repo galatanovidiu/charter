@@ -25,5 +25,8 @@
 		<testsuite name="slice0-atomic">
 			<directory suffix="Test.php">tests/Integration/AtomicLifecycle</directory>
 		</testsuite>
+		<testsuite name="slice0-rest-auth">
+			<directory suffix="Test.php">tests/Integration/RestAuthenticationBoundary</directory>
+		</testsuite>
 	</testsuites>
 </phpunit>
