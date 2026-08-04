@@ -21,6 +21,7 @@
 		"test:slice0:multisite:prepare": "wp-env run cli --config=.wp-env.slice0.json bash -c 'for constant in MULTISITE SUBDOMAIN_INSTALL DOMAIN_CURRENT_SITE PATH_CURRENT_SITE SITE_ID_CURRENT_SITE BLOG_ID_CURRENT_SITE; do wp config delete \"$constant\" --config-file=/wordpress-phpunit/wp-tests-config.php; done'",
 		"test:slice0:multisite:version": "wp-env run cli --config=.wp-env.slice0.json wp core version",
 		"test:slice0:multisite": "wp-env run cli --config=.wp-env.slice0.json --env-cwd=wp-content/plugins/charter env WP_MULTISITE=1 php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=slice0-multisite",
+		"test:slice0:root-key": "wp-env run cli --config=.wp-env.slice0.json --env-cwd=wp-content/plugins/charter bash tools/run-slice0-root-key-probes.sh",
 		"test:slice0:multisite:logs": "wp-env logs --config=.wp-env.slice0.json --no-watch",
 		"test:slice0:multisite:destroy": "wp-env destroy --config=.wp-env.slice0.json --force",
 		"test:slice0:multisite:ci": "bash tools/run-slice0-multisite-tests.sh",

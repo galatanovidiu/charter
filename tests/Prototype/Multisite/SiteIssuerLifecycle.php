@@ -197,6 +197,20 @@ final class SiteIssuerLifecycle {
 	}
 
 	/**
+	 * Returns an opaque fingerprint for byte-for-byte state comparisons.
+	 *
+	 * Callers compare this value only and must not include its literal in
+	 * assertion output or evidence.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @return string The opaque state fingerprint.
+	 */
+	public static function stateFingerprint(): string {
+		return ProofStateFingerprint::forNetworkOption( self::STORE_OPTION );
+	}
+
+	/**
 	 * Removes every issuer record located by one deleted WordPress site.
 	 *
 	 * The site ID is used only as a cleanup locator. Issuer-addressed lookups

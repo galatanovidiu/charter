@@ -31,6 +31,7 @@ npm run test:slice0:multisite:start
 npm run test:slice0:multisite:prepare
 npm run test:slice0:multisite:version
 npm run test:slice0:multisite
+npm run test:slice0:root-key
 
 trap - EXIT INT TERM
 npm run test:slice0:multisite:destroy
