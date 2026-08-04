@@ -22,5 +22,8 @@
 			<file>tests/Integration/PluginBootstrapTest.php</file>
 			<directory suffix="Test.php">tests/Integration/Multisite</directory>
 		</testsuite>
+		<testsuite name="slice0-atomic">
+			<directory suffix="Test.php">tests/Integration/AtomicLifecycle</directory>
+		</testsuite>
 	</testsuites>
 </phpunit>
