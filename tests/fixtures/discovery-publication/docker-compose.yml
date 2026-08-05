@@ -1,0 +1,140 @@
+services:
+  apache:
+    image: php:8.4-apache@sha256:3f9ad397f38f7fe1e0e92b6cb5398e5d117f7d70cad1b6768bea3c1efc3c2d90
+    command: ["/bin/sh", "-c", "a2enmod rewrite ssl >/dev/null && exec apache2-foreground"]
+    environment:
+      P5_ISSUER: ${P5_ISSUER:-https://issuer.charter.test}
+    volumes:
+      - ${P5_PROJECT_ROOT}:/workspace:ro
+      - ./http-worker.php:/var/www/html/index.php:ro
+      - ./apache/.htaccess:/var/www/html/.htaccess:ro
+      - ./apache/000-default.conf:/etc/apache2/sites-enabled/000-default.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+      - ${P5_WORDPRESS_ROOT}:/var/www/html/wordpress:ro
+      - ${P5_STATE_DIR}:/state:ro
+    networks:
+      - client-edge
+
+  fpm:
+    image: php:8.4-fpm-alpine@sha256:5992f8b7433fe7fa96dfbf67746c86d6c41bc91e686eac38fe531c72a02e40e4
+    environment:
+      P5_ISSUER: ${P5_ISSUER:-https://issuer.charter.test}
+    volumes:
+      - ${P5_PROJECT_ROOT}:/workspace:ro
+      - ./http-worker.php:/var/www/html/index.php:ro
+      - ${P5_WORDPRESS_ROOT}:/var/www/html/wordpress:ro
+      - ${P5_STATE_DIR}:/state:ro
+    networks:
+      - backend
+
+  nginx:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/nginx.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+      - backend
+    depends_on:
+      - fpm
+
+  proxy-origin:
+    image: php:8.4-apache@sha256:3f9ad397f38f7fe1e0e92b6cb5398e5d117f7d70cad1b6768bea3c1efc3c2d90
+    command: ["/bin/sh", "-c", "a2enmod rewrite ssl >/dev/null && exec apache2-foreground"]
+    environment:
+      P5_ISSUER: ${P5_ISSUER:-https://issuer.charter.test}
+    volumes:
+      - ${P5_PROJECT_ROOT}:/workspace:ro
+      - ./http-worker.php:/var/www/html/index.php:ro
+      - ./apache/.htaccess:/var/www/html/.htaccess:ro
+      - ./apache/000-default.conf:/etc/apache2/sites-enabled/000-default.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+      - ${P5_WORDPRESS_ROOT}:/var/www/html/wordpress:ro
+      - ${P5_STATE_DIR}:/state:ro
+    networks:
+      - backend
+
+  proxy:
+    image: haproxy:3.2-alpine@sha256:79799e8b2977e60802774fa53d29e6b54e045402cdd8a8b9fe43923e7095a047
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+      - backend
+    depends_on:
+      - proxy-origin
+
+  dot-deny:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./blocked/dot-path-deny.conf:/etc/nginx/nginx.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+
+  physical-well-known:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./blocked/physical-well-known.conf:/etc/nginx/nginx.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+
+  intercept-redirect:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./blocked/intercept-redirect.conf:/etc/nginx/nginx.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+
+  intercept-json:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./blocked/intercept-json.conf:/etc/nginx/nginx.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+
+  html-fallback:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./blocked/html-fallback.conf:/etc/nginx/nginx.conf:ro
+      - ${P5_SERVER_CERT_DIR}:/certs:ro
+    networks:
+      - client-edge
+
+  client:
+    image: curlimages/curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep 3600"]
+    volumes:
+      - ${P5_CLIENT_CERT_DIR}:/certs:ro
+      - ${P5_HTTP_CAPTURE_DIR}:/capture
+    networks:
+      - client-edge
+
+  host-relay:
+    image: haproxy:3.2-alpine@sha256:79799e8b2977e60802774fa53d29e6b54e045402cdd8a8b9fe43923e7095a047
+    volumes:
+      - ./haproxy/host-relay.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "127.0.0.1:${P5_APACHE_PORT}:8443"
+      - "127.0.0.1:${P5_NGINX_PORT}:8444"
+      - "127.0.0.1:${P5_PROXY_PORT}:8445"
+      - "127.0.0.1:${P5_DOT_DENY_PORT}:8446"
+      - "127.0.0.1:${P5_PHYSICAL_WELL_KNOWN_PORT}:8447"
+      - "127.0.0.1:${P5_INTERCEPT_REDIRECT_PORT}:8448"
+      - "127.0.0.1:${P5_INTERCEPT_JSON_PORT}:8449"
+      - "127.0.0.1:${P5_HTML_FALLBACK_PORT}:8450"
+    networks:
+      - client-edge
+      - host-edge
+
+networks:
+  client-edge:
+    internal: true
+  backend:
+    internal: true
+  host-edge:

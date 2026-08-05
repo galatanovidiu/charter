@@ -28,5 +28,16 @@
 		<testsuite name="slice0-rest-auth">
 			<directory suffix="Test.php">tests/Integration/RestAuthenticationBoundary</directory>
 		</testsuite>
+		<testsuite name="slice0-discovery-publication">
+			<directory suffix="Test.php">tests/Integration/DiscoveryPublication</directory>
+			<exclude>tests/Integration/DiscoveryPublication/UnsupportedTopologyWordPressTest.php</exclude>
+			<exclude>tests/Integration/DiscoveryPublication/UnsupportedPathMultisiteHttpTest.php</exclude>
+		</testsuite>
+		<testsuite name="slice0-discovery-publication-wordpress-single">
+			<file>tests/Integration/DiscoveryPublication/UnsupportedTopologyWordPressTest.php</file>
+		</testsuite>
+		<testsuite name="slice0-discovery-publication-wordpress-multisite">
+			<file>tests/Integration/DiscoveryPublication/UnsupportedPathMultisiteHttpTest.php</file>
+		</testsuite>
 	</testsuites>
 </phpunit>
