@@ -37,6 +37,8 @@
 		"test:slice0:discovery-publication:ci": "bash tools/run-slice0-discovery-publication-tests.sh",
 		"test:slice0:atomic:matrix": "bash tools/run-slice0-atomic-lifecycle.sh",
 		"test:slice0:atomic:stress": "CHARTER_ATOMIC_ROUNDS=75 bash tools/run-slice0-atomic-lifecycle.sh",
+		"test:slice0:cimd-outbound-safety": "php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-unit.php --exclude-group=p3-hostile tests/Integration/CimdOutboundSafety",
+		"test:slice0:cimd-outbound-safety:ci": "bash tools/run-slice0-cimd-outbound-safety.sh",
 		"build:zip": "bash tools/build-zip.sh",
 		"artifact:verify": "php tools/verify-archive.php build/charter.zip",
 		"artifact:test": "bash tools/test-archive.sh",

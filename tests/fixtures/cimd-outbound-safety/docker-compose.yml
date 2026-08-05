@@ -1,0 +1,244 @@
+name: charter-p3-cimd-outbound-safety
+
+x-p3-service: &p3-service
+  # Multi-arch manifest verified 2026-08-05; linux/arm64 child:
+  # sha256:d848c4b7de2fa4f22dc22761fe447ccd194977e509d9760eb8537c020531b365.
+  image: wordpress:php8.4-apache@sha256:3f1b6098b3c2dae13f20a0a36e02225e56edfe73643ca2555c5a079de7d1ca41
+  init: true
+  read_only: true
+  restart: "no"
+  user: "33:33"
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  networks:
+    hostile:
+
+x-p3-fixture-volumes: &p3-fixture-volumes
+  - .:/fixture:ro
+  - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+
+services:
+  dns:
+    <<: *p3-service
+    user: "0:0"
+    command: ["php", "/fixture/dns/server.php"]
+    environment:
+      P3_DNS_LISTEN: "0.0.0.0:53"
+      P3_STATE_DIR: /state
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes: *p3-fixture-volumes
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.53
+
+  origin:
+    <<: *p3-service
+    user: "0:0"
+    command: ["php", "/fixture/origin/server.php", "origin"]
+    environment:
+      P3_CERT_DIR: /certs
+      P3_LISTEN: "0.0.0.0:443"
+      P3_STATE_DIR: /state
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.crt:/certs/server.crt:ro
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.key:/certs/server.key:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.34
+
+  origin6:
+    <<: *p3-service
+    user: "0:0"
+    command: ["php", "/fixture/origin/server.php", "origin"]
+    environment:
+      P3_CERT_DIR: /certs
+      P3_LISTEN: "[::]:443"
+      P3_STATE_DIR: /state
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.crt:/certs/server.crt:ro
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.key:/certs/server.key:ro
+    networks:
+      hostile:
+        ipv6_address: 2001:4860:ffff::34
+
+  redirect-sink:
+    <<: *p3-service
+    user: "0:0"
+    command: ["php", "/fixture/origin/server.php", "redirect-target"]
+    environment:
+      P3_CERT_DIR: /certs
+      P3_LISTEN: "0.0.0.0:443"
+      P3_STATE_DIR: /state
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.crt:/certs/server.crt:ro
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.key:/certs/server.key:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.35
+
+  embedded-url-sink:
+    <<: *p3-service
+    user: "0:0"
+    command: ["php", "/fixture/origin/server.php", "embedded-url"]
+    environment:
+      P3_CERT_DIR: /certs
+      P3_LISTEN: "0.0.0.0:443"
+      P3_STATE_DIR: /state
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.crt:/certs/server.crt:ro
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.key:/certs/server.key:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.36
+
+  special-sink:
+    <<: *p3-service
+    user: "0:0"
+    command: ["php", "/fixture/origin/server.php", "special"]
+    environment:
+      P3_CERT_DIR: /certs
+      P3_LISTEN: "0.0.0.0:443"
+      P3_STATE_DIR: /state
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.crt:/certs/server.crt:ro
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/server.key:/certs/server.key:ro
+    networks:
+      hostile:
+        ipv4_address: 198.18.0.10
+
+  http-proxy:
+    <<: *p3-service
+    command: ["php", "/fixture/proxy/server.php", "http"]
+    environment:
+      P3_CA_FILE: /certs/ca.crt
+      P3_LISTEN: "0.0.0.0:8080"
+      P3_STATE_DIR: /state
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/ca.crt:/certs/ca.crt:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.40
+
+  socks-proxy:
+    <<: *p3-service
+    command: ["php", "/fixture/proxy/server.php", "socks"]
+    environment:
+      P3_CA_FILE: /certs/ca.crt
+      P3_LISTEN: "0.0.0.0:1080"
+      P3_STATE_DIR: /state
+    volumes:
+      - .:/fixture:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/ca.crt:/certs/ca.crt:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.41
+
+  control:
+    <<: *p3-service
+    command: ["php", "-S", "0.0.0.0:8080", "/fixture/control/router.php"]
+    environment:
+      P3_STATE_DIR: /state
+    volumes: *p3-fixture-volumes
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.42
+
+  wp84:
+    <<: *p3-service
+    command: ["sleep", "3600"]
+    working_dir: /workspace
+    environment:
+      P3_EXPECTED_PHP: "8.4"
+      P3_EXPECTED_WORDPRESS: "6.9.5"
+      P3_FIXTURE_CA_FILE: /certs/ca.crt
+      P3_FIXTURE_CLIENT_ID: https://client.charter.test/client.json
+      P3_FIXTURE_CONTROL_URL: http://198.17.0.42:8080
+      P3_FIXTURE_DNS_SERVER: "198.17.0.53:53"
+      P3_FIXTURE_PROXY_URL: http://198.17.0.40:8080
+      P3_FIXTURE_SOCKS_PROXY_URL: "198.17.0.41:1080"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+    volumes:
+      - ${P3_PROJECT_ROOT:?P3_PROJECT_ROOT is required}:/workspace:ro
+      - ${P3_WORDPRESS_ROOT:?P3_WORDPRESS_ROOT is required}:/usr/src/wordpress:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/ca.crt:/certs/ca.crt:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.84
+    dns:
+      - 198.17.0.53
+
+  wp85:
+    <<: *p3-service
+    # Multi-arch manifest verified 2026-08-05; linux/arm64 child:
+    # sha256:477e6e3315c8eb50bb6647aa6f7ed9d409933933b7014995d95057dbecc481db.
+    image: wordpress:php8.5-apache@sha256:32d11d7b2c4aace5b4ed65dc7c014b5e70d9f7d4a7e16e7c6687c81bede782b4
+    command: ["sleep", "3600"]
+    working_dir: /workspace
+    environment:
+      P3_EXPECTED_PHP: "8.5"
+      P3_EXPECTED_WORDPRESS: "6.9.5"
+      P3_FIXTURE_CA_FILE: /certs/ca.crt
+      P3_FIXTURE_CLIENT_ID: https://client.charter.test/client.json
+      P3_FIXTURE_CONTROL_URL: http://198.17.0.42:8080
+      P3_FIXTURE_DNS_SERVER: "198.17.0.53:53"
+      P3_FIXTURE_PROXY_URL: http://198.17.0.40:8080
+      P3_FIXTURE_SOCKS_PROXY_URL: "198.17.0.41:1080"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+    volumes:
+      - ${P3_PROJECT_ROOT:?P3_PROJECT_ROOT is required}:/workspace:ro
+      - ${P3_WORDPRESS_ROOT:?P3_WORDPRESS_ROOT is required}:/usr/src/wordpress:ro
+      - ${P3_STATE_DIR:?P3_STATE_DIR is required}:/state
+      - ${P3_CERT_DIR:?P3_CERT_DIR is required}/ca.crt:/certs/ca.crt:ro
+    networks:
+      hostile:
+        ipv4_address: 198.17.0.85
+    dns:
+      - 198.17.0.53
+
+networks:
+  hostile:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 198.16.0.0/14
+        - subnet: 2001:4860:ffff::/64
