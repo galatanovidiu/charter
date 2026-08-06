@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter\Http;
 
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
+use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\Site\SiteState;
 use WP_Error;
 use WP_REST_Request;
@@ -111,6 +112,9 @@ final class MetadataController {
 				'scopes_supported'                      => array( AuthorizationService::GENERAL_SCOPE, AuthorizationService::OFFLINE_ACCESS_SCOPE ),
 				'authorization_response_iss_parameter_supported' => true,
 			);
+			if ( DynamicRegistrationService::isEnabled() ) {
+				$data['registration_endpoint'] = $urls->registrationEndpoint();
+			}
 		}
 
 		return $this->metadataResponse( $data );

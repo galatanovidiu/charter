@@ -180,6 +180,10 @@ final class AuthorizationService {
 			);
 		}
 
+		if ( ! $this->clients->markAuthorized( $record->issuer(), $record->clientId(), $timestamp ) ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The client authorization state could not be recorded.', 503 );
+		}
+
 		$code = $this->credentials->approveAuthorization( $record, $timestamp, $reusableGrantId );
 		if ( null === $code ) {
 			throw new ProtocolException( 'invalid_request', 'The authorization transaction is invalid or expired.' );

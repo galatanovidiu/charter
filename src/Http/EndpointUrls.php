@@ -74,6 +74,15 @@ final class EndpointUrls {
 	}
 
 	/**
+	 * Returns the RFC 7591 Dynamic Client Registration endpoint.
+	 *
+	 * @since 0.1.0
+	 */
+	public function registrationEndpoint(): string {
+		return $this->replaceOrigin( rest_url( 'charter/v1/register' ) );
+	}
+
+	/**
 	 * Replaces a WordPress-generated origin while retaining its routed path.
 	 *
 	 * @since 0.1.0

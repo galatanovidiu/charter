@@ -10,7 +10,11 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter\Admin;
 
 use GalatanOvidiu\Charter\Http\EndpointUrls;
+use GalatanOvidiu\Charter\OAuth\ClientGovernance;
 use GalatanOvidiu\Charter\OAuth\ClientRegistry;
+use GalatanOvidiu\Charter\OAuth\CredentialStore;
+use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
+use GalatanOvidiu\Charter\Security\AuditLog;
 use GalatanOvidiu\Charter\Site\SiteState;
 use InvalidArgumentException;
 use RuntimeException;
@@ -27,12 +31,18 @@ final class SettingsPage {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SiteState      $siteState Site lifecycle and identity.
-	 * @param ClientRegistry $clients   Pre-registered client service.
+	 * @param SiteState        $siteState Site lifecycle and identity.
+	 * @param ClientRegistry   $clients   Client registry.
+	 * @param CredentialStore  $credentials Grant persistence.
+	 * @param ClientGovernance $governance Administrator governance.
+	 * @param AuditLog         $audit Security event ledger.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
-		private readonly ClientRegistry $clients
+		private readonly ClientRegistry $clients,
+		private readonly CredentialStore $credentials,
+		private readonly ClientGovernance $governance,
+		private readonly AuditLog $audit
 	) {
 	}
 
@@ -45,6 +55,9 @@ final class SettingsPage {
 		add_action( 'admin_menu', array( $this, 'registerPage' ) );
 		add_action( 'admin_post_charter_oauth_enable', array( $this, 'enable' ) );
 		add_action( 'admin_post_charter_oauth_register_client', array( $this, 'registerClient' ) );
+		add_action( 'admin_post_charter_oauth_update_dcr', array( $this, 'updateDynamicRegistration' ) );
+		add_action( 'admin_post_charter_oauth_block_client', array( $this, 'blockClient' ) );
+		add_action( 'admin_post_charter_oauth_delete_client', array( $this, 'deleteClient' ) );
 	}
 
 	/**
@@ -71,6 +84,8 @@ final class SettingsPage {
 		$this->requireAdministrator();
 
 		$identity = $this->siteState->identity();
+		$clients  = null === $identity ? array() : $this->clients->listForIssuer( $identity->issuer() );
+		$events   = null === $identity ? array() : $this->audit->listForIssuer( $identity->issuer(), 50 );
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Charter OAuth', 'charter' ); ?></h1>
@@ -95,6 +110,15 @@ final class SettingsPage {
 					</form>
 				<?php endif; ?>
 
+				<h2><?php esc_html_e( 'Dynamic Client Registration', 'charter' ); ?></h2>
+				<p><?php esc_html_e( 'Dynamic registration is enabled by default for compatible clients. Disabling it stops only new registrations and does not revoke existing clients or grants.', 'charter' ); ?></p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<input type="hidden" name="action" value="charter_oauth_update_dcr">
+					<?php wp_nonce_field( 'charter_oauth_update_dcr:' . $identity->issuer() ); ?>
+					<label><input type="checkbox" name="dcr_enabled" value="1" <?php checked( DynamicRegistrationService::isEnabled() ); ?>> <?php esc_html_e( 'Accept new dynamic registrations', 'charter' ); ?></label>
+					<?php submit_button( __( 'Save registration policy', 'charter' ) ); ?>
+				</form>
+
 				<h2><?php esc_html_e( 'Pre-register a client', 'charter' ); ?></h2>
 				<p><?php esc_html_e( 'Every client uses Authorization Code with mandatory PKCE S256. Confidential clients receive a secret once after registration.', 'charter' ); ?></p>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
@@ -117,6 +141,54 @@ final class SettingsPage {
 					</table>
 					<?php submit_button( __( 'Register client', 'charter' ) ); ?>
 				</form>
+
+				<h2><?php esc_html_e( 'Registered clients', 'charter' ); ?></h2>
+				<?php if ( array() === $clients ) : ?>
+					<p><?php esc_html_e( 'No clients are registered for this issuer.', 'charter' ); ?></p>
+				<?php else : ?>
+					<table class="widefat striped">
+						<thead><tr><th><?php esc_html_e( 'Client', 'charter' ); ?></th><th><?php esc_html_e( 'Registration', 'charter' ); ?></th><th><?php esc_html_e( 'Authorizations', 'charter' ); ?></th><th><?php esc_html_e( 'Action', 'charter' ); ?></th></tr></thead>
+						<tbody>
+						<?php foreach ( $clients as $client ) : ?>
+							<?php $grants = $this->credentials->listActiveGrantsForClient( $identity->issuer(), $client->clientId() ); ?>
+							<tr>
+								<td><strong><?php echo esc_html( $client->name() ); ?></strong><br><code><?php echo esc_html( $client->clientId() ); ?></code></td>
+								<td><?php /* translators: 1: registration source, 2: lifecycle status. */ echo esc_html( sprintf( __( '%1$s; %2$s', 'charter' ), $client->source(), $client->status() ) ); ?><br><?php echo esc_html( $client->authenticationMethod() ); ?></td>
+								<td>
+									<?php if ( array() === $grants ) : ?>
+										<?php esc_html_e( 'No active grants', 'charter' ); ?>
+									<?php else : ?>
+										<?php foreach ( $grants as $grant ) : ?>
+											<?php $user = get_userdata( $grant->userId() ); ?>
+											<div><?php echo esc_html( false === $user ? (string) $grant->userId() : $user->display_name ); ?> — <?php echo esc_html( $grant->scope() ); ?></div>
+										<?php endforeach; ?>
+									<?php endif; ?>
+								</td>
+								<td>
+									<?php if ( ClientRegistry::STATUS_ACTIVE === $client->status() ) : ?>
+										<?php $this->renderClientAction( 'charter_oauth_block_client', __( 'Block', 'charter' ), $identity->issuer(), $client->clientId(), 'secondary' ); ?>
+									<?php endif; ?>
+									<?php if ( ClientRegistry::STATUS_DELETED !== $client->status() ) : ?>
+										<?php $this->renderClientAction( 'charter_oauth_delete_client', __( 'Delete', 'charter' ), $identity->issuer(), $client->clientId(), 'delete' ); ?>
+									<?php endif; ?>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+						</tbody>
+					</table>
+				<?php endif; ?>
+
+				<h2><?php esc_html_e( 'Recent OAuth security events', 'charter' ); ?></h2>
+				<?php if ( array() === $events ) : ?>
+					<p><?php esc_html_e( 'No security events are recorded for this issuer.', 'charter' ); ?></p>
+				<?php else : ?>
+					<table class="widefat striped"><thead><tr><th><?php esc_html_e( 'Time', 'charter' ); ?></th><th><?php esc_html_e( 'Event', 'charter' ); ?></th><th><?php esc_html_e( 'Client', 'charter' ); ?></th><th><?php esc_html_e( 'Outcome', 'charter' ); ?></th></tr></thead><tbody>
+					<?php foreach ( $events as $event ) : ?>
+						<?php $eventTime = wp_date( 'Y-m-d H:i:s', $event->occurredAt() ); ?>
+						<tr><td><?php echo esc_html( false === $eventTime ? '' : $eventTime ); ?></td><td><?php echo esc_html( $event->eventType() ); ?><br><?php echo esc_html( $event->reason() ); ?></td><td><code><?php echo esc_html( $event->clientId() ?? '—' ); ?></code></td><td><?php echo esc_html( $event->outcome() ); ?></td></tr>
+					<?php endforeach; ?>
+					</tbody></table>
+				<?php endif; ?>
 			<?php endif; ?>
 		</div>
 		<?php
@@ -192,6 +264,58 @@ final class SettingsPage {
 	}
 
 	/**
+	 * Enables or stops only new Dynamic Client Registration.
+	 */
+	public function updateDynamicRegistration(): void {
+		$this->requireAdministrator();
+		$identity = $this->requireIdentity();
+		check_admin_referer( 'charter_oauth_update_dcr:' . $identity->issuer() );
+		if ( ! DynamicRegistrationService::setEnabled( '1' === self::postScalar( 'dcr_enabled' ) ) ) {
+			wp_die( esc_html__( 'The dynamic registration policy could not be saved.', 'charter' ), '', array( 'response' => 500 ) );
+		}
+
+		wp_safe_redirect( $this->settingsUrl() );
+		exit;
+	}
+
+	/**
+	 * Blocks one exact issuer-owned client and revokes its active grants.
+	 */
+	public function blockClient(): void {
+		$this->governClient( 'block' );
+	}
+
+	/**
+	 * Deletes one exact issuer-owned client and revokes its active grants.
+	 */
+	public function deleteClient(): void {
+		$this->governClient( 'delete' );
+	}
+
+	/**
+	 * Applies one nonce-protected administrator client action.
+	 *
+	 * @param string $operation Block or delete.
+	 */
+	private function governClient( string $operation ): never {
+		$this->requireAdministrator();
+		$identity = $this->requireIdentity();
+		$clientId = self::postScalar( 'client_id' );
+		$action   = 'charter_oauth_' . $operation . '_client';
+		check_admin_referer( $action . ':' . hash( 'sha256', $identity->issuer() . "\0" . $clientId ) );
+
+		$completed = 'block' === $operation
+			? $this->governance->block( $identity->issuer(), $clientId, get_current_user_id(), time() )
+			: $this->governance->delete( $identity->issuer(), $clientId, get_current_user_id(), time() );
+		if ( ! $completed ) {
+			wp_die( esc_html__( 'The client governance action could not be completed.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		wp_safe_redirect( $this->settingsUrl() );
+		exit;
+	}
+
+	/**
 	 * Reveals a generated confidential-client secret in one no-store response.
 	 *
 	 * Refreshing the POST cannot reveal the secret again because registrations
@@ -234,6 +358,38 @@ final class SettingsPage {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_die( esc_html__( 'You are not allowed to manage Charter OAuth.', 'charter' ), '', array( 'response' => 403 ) );
 		}
+	}
+
+	/**
+	 * Returns the prepared current identity or stops the administrator action.
+	 */
+	private function requireIdentity(): \GalatanOvidiu\Charter\Site\SiteIdentity {
+		$identity = $this->siteState->identity();
+		if ( null === $identity ) {
+			wp_die( esc_html__( 'The site OAuth issuer is not prepared.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		return $identity;
+	}
+
+	/**
+	 * Renders one exact client governance form.
+	 *
+	 * @param string $action Admin-post action.
+	 * @param string $label Button label.
+	 * @param string $issuer Exact issuer.
+	 * @param string $clientId Exact client identifier.
+	 * @param string $buttonClass WordPress button class.
+	 */
+	private function renderClientAction( string $action, string $label, string $issuer, string $clientId, string $buttonClass ): void {
+		?>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block">
+			<input type="hidden" name="action" value="<?php echo esc_attr( $action ); ?>">
+			<input type="hidden" name="client_id" value="<?php echo esc_attr( $clientId ); ?>">
+			<?php wp_nonce_field( $action . ':' . hash( 'sha256', $issuer . "\0" . $clientId ) ); ?>
+			<?php submit_button( $label, $buttonClass . ' small', 'submit', false ); ?>
+		</form>
+		<?php
 	}
 
 	/**

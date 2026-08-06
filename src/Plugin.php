@@ -14,15 +14,21 @@ use GalatanOvidiu\Charter\Admin\ConnectedAppsPage;
 use GalatanOvidiu\Charter\Http\AuthorizationController;
 use GalatanOvidiu\Charter\Http\CorsPolicy;
 use GalatanOvidiu\Charter\Http\MetadataController;
+use GalatanOvidiu\Charter\Http\RegistrationController;
 use GalatanOvidiu\Charter\Http\RevocationController;
 use GalatanOvidiu\Charter\Http\TokenController;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
+use GalatanOvidiu\Charter\OAuth\ClientCleanup;
+use GalatanOvidiu\Charter\OAuth\ClientGovernance;
 use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\CredentialHasher;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
+use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\UserSecurityEvents;
 use GalatanOvidiu\Charter\Rest\BearerAuthenticator;
+use GalatanOvidiu\Charter\Security\AuditLog;
+use GalatanOvidiu\Charter\Security\RateLimiter;
 use GalatanOvidiu\Charter\Site\SiteState;
 
 /**
@@ -98,6 +104,34 @@ final class Plugin {
 	private readonly BearerAuthenticator $bearerAuthenticator;
 
 	/**
+	 * Dynamic registration service.
+	 *
+	 * @var DynamicRegistrationService
+	 */
+	private readonly DynamicRegistrationService $dynamicRegistration;
+
+	/**
+	 * Site client governance.
+	 *
+	 * @var ClientGovernance
+	 */
+	private readonly ClientGovernance $clientGovernance;
+
+	/**
+	 * Secret-free security ledger.
+	 *
+	 * @var AuditLog
+	 */
+	private readonly AuditLog $audit;
+
+	/**
+	 * OAuth abuse counters.
+	 *
+	 * @var RateLimiter
+	 */
+	private readonly RateLimiter $rateLimiter;
+
+	/**
 	 * Prevents direct construction.
 	 *
 	 * @since 0.1.0
@@ -106,6 +140,10 @@ final class Plugin {
 		$this->siteState           = new SiteState();
 		$this->clients             = new ClientRegistry();
 		$this->credentials         = new CredentialStore( new CredentialHasher() );
+		$this->audit               = new AuditLog();
+		$this->rateLimiter         = new RateLimiter();
+		$this->clientGovernance    = new ClientGovernance( $this->clients, $this->credentials, $this->audit );
+		$this->dynamicRegistration = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
 		$this->authorization       = new AuthorizationService( $this->siteState, $this->clients, $this->credentials );
 		$this->tokens              = new TokenService( $this->siteState, $this->clients, $this->credentials );
 		$this->bearerAuthenticator = new BearerAuthenticator( $this->siteState, $this->tokens );
@@ -206,6 +244,34 @@ final class Plugin {
 	}
 
 	/**
+	 * Returns Dynamic Client Registration for integration and tests.
+	 */
+	public function dynamicRegistration(): DynamicRegistrationService {
+		return $this->dynamicRegistration;
+	}
+
+	/**
+	 * Returns site-administrator client governance.
+	 */
+	public function clientGovernance(): ClientGovernance {
+		return $this->clientGovernance;
+	}
+
+	/**
+	 * Returns the secret-free event ledger.
+	 */
+	public function audit(): AuditLog {
+		return $this->audit;
+	}
+
+	/**
+	 * Returns OAuth abuse counters for bounded cleanup and tests.
+	 */
+	public function rateLimiter(): RateLimiter {
+		return $this->rateLimiter;
+	}
+
+	/**
 	 * Prepares an existing active single site after a plugin-code upgrade.
 	 *
 	 * Network-active sites remain Available until explicitly selected.
@@ -241,23 +307,27 @@ final class Plugin {
 		$metadata      = new MetadataController( $this->siteState );
 		$tokens        = new TokenController( $this->tokens );
 		$revocation    = new RevocationController( $this->tokens );
+		$registration  = new RegistrationController( $this->dynamicRegistration );
 		$authorization = new AuthorizationController( $this->siteState, $this->authorization );
-		$settings      = new SettingsPage( $this->siteState, $this->clients );
+		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->audit );
 		$connectedApps = new ConnectedAppsPage( $this->siteState, $this->clients, $this->credentials );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );
 		$cors          = new CorsPolicy();
+		$cleanup       = new ClientCleanup( $this->siteState, $this->clients, $this->clientGovernance, $this->audit );
 
 		add_action( 'init', array( $metadata, 'registerRewriteRules' ), 1 );
 		add_action( 'init', array( $this, 'ensureCurrentSiteReady' ), 2 );
 		add_action( 'rest_api_init', array( $metadata, 'registerRoutes' ) );
 		add_action( 'rest_api_init', array( $tokens, 'registerRoutes' ) );
 		add_action( 'rest_api_init', array( $revocation, 'registerRoutes' ) );
+		add_action( 'rest_api_init', array( $registration, 'registerRoutes' ) );
 		add_action( 'admin_post_charter_oauth_authorize', array( $authorization, 'handle' ) );
 		add_action( 'admin_post_nopriv_charter_oauth_authorize', array( $authorization, 'handleLoggedOut' ) );
 		$settings->registerHooks();
 		$connectedApps->registerHooks();
 		$userEvents->registerHooks();
 		$cors->registerHooks();
+		$cleanup->registerHooks();
 		$this->bearerAuthenticator->registerHooks();
 	}
 }

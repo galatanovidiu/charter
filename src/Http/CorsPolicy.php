@@ -23,6 +23,12 @@ final class CorsPolicy {
 		'/charter/v1/metadata/protected-resource',
 	);
 
+	private const NO_CORS_ROUTES = array(
+		'/charter/v1/register',
+		'/charter/v1/revoke',
+		'/charter/v1/token',
+	);
+
 	/**
 	 * Registers late wire-header normalization.
 	 *
@@ -47,7 +53,7 @@ final class CorsPolicy {
 		unset( $result, $server );
 
 		$route = $request->get_route();
-		if ( ! in_array( $route, self::METADATA_ROUTES, true ) && ! in_array( $route, array( '/charter/v1/token', '/charter/v1/revoke' ), true ) ) {
+		if ( ! in_array( $route, self::METADATA_ROUTES, true ) && ! in_array( $route, self::NO_CORS_ROUTES, true ) ) {
 			return $served;
 		}
 

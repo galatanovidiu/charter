@@ -495,6 +495,58 @@ final class CredentialStore {
 	}
 
 	/**
+	 * Lists active authorizations for one exact site client.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param string $clientId Exact client identifier.
+	 * @return array<GrantRecord> Most recently active grants first.
+	 */
+	public function listActiveGrantsForClient( string $issuer, string $clientId ): array {
+		if ( '' === $issuer || '' === $clientId ) {
+			return array();
+		}
+		$timestamp = time();
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $clientId, $timestamp ): array {
+				$table  = self::quotedTable( Schema::grantTable() );
+				$result = $database->execute_query(
+					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at
+					FROM {$table}
+					WHERE client_digest = ? AND status = 'active'
+					ORDER BY last_used_at DESC, id DESC LIMIT 1000",
+					array( self::clientDigest( $issuer, $clientId ) )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Administrator authorization reads use an owned connection.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+
+				$grants = array();
+				while ( true ) {
+					$row = $result->fetch_assoc();
+					if ( ! is_array( $row ) ) {
+						break;
+					}
+					$grant = $this->grantFromRow( $row );
+					if (
+						null !== $grant
+						&& $grant->issuer() === $issuer
+						&& $grant->clientId() === $clientId
+						&& $grant->isActiveAt( $timestamp, $grant->continuingAccess() )
+					) {
+						$grants[] = $grant;
+					}
+				}
+				$result->free();
+
+				return $grants;
+			}
+		);
+	}
+
+	/**
 	 * Atomically consumes a still-active non-authority transaction.
 	 *
 	 * @since 0.1.0
@@ -592,6 +644,61 @@ final class CredentialStore {
 				foreach ( $grantIds as $grantId ) {
 					$grant = $this->lockGrant( $database, $grantId );
 					if ( null === $grant || $grant->issuer() !== $issuer || $grant->userId() !== $userId || 'active' !== $grant->status() ) {
+						continue;
+					}
+					$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', $reason );
+					++$revoked;
+				}
+
+				return $revoked;
+			}
+		);
+	}
+
+	/**
+	 * Revokes every active grant for one exact client under one issuer.
+	 *
+	 * @since 0.1.0
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @param string $clientId Exact client identifier.
+	 * @param int    $timestamp Current timestamp.
+	 * @param string $reason Stable non-secret reason.
+	 * @return int Number of active grants closed.
+	 */
+	public function revokeAllGrantsForClient( string $issuer, string $clientId, int $timestamp, string $reason ): int {
+		if ( '' === $issuer || '' === $clientId || 1 !== preg_match( '/^[a-z0-9_]{1,64}$/D', $reason ) ) {
+			return 0;
+		}
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $clientId, $timestamp, $reason ): int {
+				$table  = self::quotedTable( Schema::grantTable() );
+				$result = $database->execute_query(
+					"SELECT id FROM {$table} WHERE client_digest = ? AND status = 'active' FOR UPDATE",
+					array( self::clientDigest( $issuer, $clientId ) )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Client-wide revocation uses an owned non-reconnecting transaction.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+
+				$grantIds = array();
+				while ( true ) {
+					$row = $result->fetch_assoc();
+					if ( ! is_array( $row ) ) {
+						break;
+					}
+					$grantId = self::integerValue( $row['id'] ?? null );
+					if ( is_int( $grantId ) && 0 < $grantId ) {
+						$grantIds[] = $grantId;
+					}
+				}
+				$result->free();
+
+				$revoked = 0;
+				foreach ( $grantIds as $grantId ) {
+					$grant = $this->lockGrant( $database, $grantId );
+					if ( null === $grant || $grant->issuer() !== $issuer || $grant->clientId() !== $clientId || 'active' !== $grant->status() ) {
 						continue;
 					}
 					$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', $reason );

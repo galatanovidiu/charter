@@ -34,6 +34,8 @@ final class Client {
 	 * @param string        $authenticationMethod Token-endpoint authentication method.
 	 * @param array<string> $grantTypes Supported grant types.
 	 * @param string|null   $clientSecretHash One-way confidential-client secret hash.
+	 * @param string        $source Registration source.
+	 * @param string        $metadataFingerprint Security metadata fingerprint.
 	 */
 	public function __construct(
 		private readonly string $issuer,
@@ -42,7 +44,9 @@ final class Client {
 		private readonly array $redirectUris,
 		private readonly string $authenticationMethod = self::AUTH_NONE,
 		private readonly array $grantTypes = array( self::GRANT_AUTHORIZATION_CODE ),
-		private readonly ?string $clientSecretHash = null
+		private readonly ?string $clientSecretHash = null,
+		private readonly string $source = ClientRegistry::SOURCE_PRE_REGISTERED,
+		private readonly string $metadataFingerprint = ''
 	) {
 	}
 
@@ -91,6 +95,24 @@ final class Client {
 	 */
 	public function authenticationMethod(): string {
 		return $this->authenticationMethod;
+	}
+
+	/**
+	 * Returns the onboarding source.
+	 *
+	 * @since 0.1.0
+	 */
+	public function source(): string {
+		return $this->source;
+	}
+
+	/**
+	 * Returns the security metadata fingerprint used by consent reuse.
+	 *
+	 * @since 0.1.0
+	 */
+	public function metadataFingerprint(): string {
+		return $this->metadataFingerprint;
 	}
 
 	/**

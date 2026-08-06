@@ -211,6 +211,7 @@ fi
 charter_http_authorization_endpoint="$(json_field "${charter_http_tmp}/authorization-metadata.json" authorization_endpoint)"
 charter_http_token_endpoint="$(json_field "${charter_http_tmp}/authorization-metadata.json" token_endpoint)"
 charter_http_revocation_endpoint="$(json_field "${charter_http_tmp}/authorization-metadata.json" revocation_endpoint)"
+charter_http_registration_endpoint="$(json_field "${charter_http_tmp}/authorization-metadata.json" registration_endpoint)"
 charter_http_verifier='0123456789abcdefghijklmnopqrstuvwxyzABCDEFG'
 export CHARTER_HTTP_AUTHORIZATION_ENDPOINT="${charter_http_authorization_endpoint}"
 export CHARTER_HTTP_ISSUER="${charter_http_issuer}"
@@ -392,6 +393,59 @@ charter_http_status="$(curl --silent --show-error \
 assert_status 200 "${charter_http_status}" 'public route preservation'
 if ! grep -qi '^Access-Control-Allow-Origin: https://client.example.test' "${charter_http_tmp}/public.headers"; then
 	echo 'Charter changed Core CORS behavior on an ordinary public REST route.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-H 'Content-Type: application/json' \
+	-H 'Origin: https://dynamic.example.test' \
+	-D "${charter_http_tmp}/dynamic-registration.headers" \
+	-o "${charter_http_tmp}/dynamic-registration.json" \
+	-w '%{http_code}' \
+	--data '{"client_name":"Dynamic HTTP client","redirect_uris":["https://dynamic.example.test/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]}' \
+	"${charter_http_registration_endpoint}")"
+assert_status 201 "${charter_http_status}" 'dynamic client registration'
+if grep -qi '^Access-Control-Allow-' "${charter_http_tmp}/dynamic-registration.headers"; then
+	echo 'The registration endpoint exposed an unsupported browser CORS contract.' >&2
+	exit 1
+fi
+if ! grep -qi '^Cache-Control: .*no-store' "${charter_http_tmp}/dynamic-registration.headers"; then
+	echo 'The registration endpoint response was not marked no-store.' >&2
+	exit 1
+fi
+if grep -q '"client_secret"' "${charter_http_tmp}/dynamic-registration.json"; then
+	echo 'A public dynamic registration unexpectedly received a client secret.' >&2
+	exit 1
+fi
+charter_http_dynamic_client="$(json_field "${charter_http_tmp}/dynamic-registration.json" client_id)"
+
+charter_http_dynamic_verifier='mnopqrstuvwxyzABCDEFG0123456789abcdefghijklm'
+authorize_logged_in \
+	"${charter_http_dynamic_client}" \
+	'https://dynamic.example.test/callback' \
+	'wordpress:access offline_access' \
+	'dynamic-client-state' \
+	"${charter_http_dynamic_verifier}" \
+	'dynamic-client'
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/dynamic-token.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=authorization_code' \
+	--data-urlencode "client_id=${charter_http_dynamic_client}" \
+	--data-urlencode "code=${charter_http_authorized_code}" \
+	--data-urlencode "code_verifier=${charter_http_dynamic_verifier}" \
+	--data-urlencode 'redirect_uri=https://dynamic.example.test/callback' \
+	"${charter_http_token_endpoint}")"
+assert_status 200 "${charter_http_status}" 'dynamic client authorization code exchange'
+charter_http_dynamic_access="$(json_field "${charter_http_tmp}/dynamic-token.json" access_token)"
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_dynamic_access}" \
+	-o "${charter_http_tmp}/dynamic-protected.json" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-json/charter-http/v1/protected")"
+assert_status 200 "${charter_http_status}" 'dynamic client Bearer-protected REST request'
+if [[ "$(json_field "${charter_http_tmp}/dynamic-protected.json" client_id)" != "${charter_http_dynamic_client}" ]]; then
+	echo 'The dynamic client context was not preserved through the protected route.' >&2
 	exit 1
 fi
 

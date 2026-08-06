@@ -19,7 +19,7 @@ use RuntimeException;
 final class Schema {
 
 	private const VERSION_OPTION = 'charter_oauth_schema_version';
-	private const VERSION        = '2';
+	private const VERSION        = '3';
 
 	/**
 	 * Installs the schema only when the current version is absent.
@@ -48,11 +48,14 @@ final class Schema {
 	public static function install(): void {
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-		$database    = self::database();
-		$table_name  = self::credentialTable();
-		$collation   = $database->get_charset_collate();
-		$grant_table = self::grantTable();
-		$sql         = "CREATE TABLE {$table_name} (
+		$database     = self::database();
+		$table_name   = self::credentialTable();
+		$collation    = $database->get_charset_collate();
+		$grant_table  = self::grantTable();
+		$client_table = self::clientTable();
+		$rate_table   = self::rateLimitTable();
+		$audit_table  = self::auditTable();
+		$sql          = "CREATE TABLE {$table_name} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			credential_type varchar(32) NOT NULL,
 			digest char(64) NOT NULL,
@@ -95,10 +98,59 @@ final class Schema {
 			PRIMARY KEY  (id),
 			KEY user_status (user_id,status),
 			KEY client_status (client_digest,status)
+		) ENGINE=InnoDB {$collation};
+		CREATE TABLE {$client_table} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			issuer_digest char(64) NOT NULL,
+			client_digest char(64) NOT NULL,
+			issuer text NOT NULL,
+			client_id text NOT NULL,
+			client_name varchar(256) NOT NULL,
+			redirect_uris longtext NOT NULL,
+			status varchar(16) NOT NULL,
+			source varchar(16) NOT NULL,
+			token_endpoint_auth_method varchar(32) NOT NULL,
+			grant_types varchar(128) NOT NULL,
+			client_secret_hash varchar(255) NULL,
+			metadata_fingerprint char(64) NOT NULL DEFAULT '',
+			created_at bigint(20) unsigned NOT NULL,
+			last_activity_at bigint(20) unsigned NOT NULL,
+			authorized_at bigint(20) unsigned NULL,
+			blocked_at bigint(20) unsigned NULL,
+			deleted_at bigint(20) unsigned NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY client_identity (client_digest),
+			KEY issuer_registry (issuer_digest,status,source),
+			KEY dynamic_lifecycle (issuer_digest,source,status,authorized_at,last_activity_at)
+		) ENGINE=InnoDB {$collation};
+		CREATE TABLE {$rate_table} (
+			bucket_digest char(64) NOT NULL,
+			window_started_at bigint(20) unsigned NOT NULL,
+			window_seconds int(10) unsigned NOT NULL,
+			request_count int(10) unsigned NOT NULL,
+			expires_at bigint(20) unsigned NOT NULL,
+			PRIMARY KEY  (bucket_digest),
+			KEY expiry (expires_at)
+		) ENGINE=InnoDB {$collation};
+		CREATE TABLE {$audit_table} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			occurred_at bigint(20) unsigned NOT NULL,
+			issuer_digest char(64) NOT NULL,
+			issuer text NOT NULL,
+			event_type varchar(64) NOT NULL,
+			actor_user_id bigint(20) unsigned NULL,
+			represented_user_id bigint(20) unsigned NULL,
+			client_id text NULL,
+			outcome varchar(32) NOT NULL,
+			reason varchar(64) NOT NULL,
+			source_address varchar(64) NULL,
+			PRIMARY KEY  (id),
+			KEY issuer_events (issuer_digest,occurred_at),
+			KEY retention (occurred_at)
 		) ENGINE=InnoDB {$collation};";
 
 		dbDelta( $sql );
-		if ( ! self::isCurrent( $database, $table_name, $grant_table ) ) {
+		if ( ! self::isCurrent( $database, $table_name, $grant_table, $client_table, $rate_table, $audit_table ) ) {
 			throw new RuntimeException( 'charter_schema_installation_failed' );
 		}
 		update_option( self::VERSION_OPTION, self::VERSION, false );
@@ -120,6 +172,33 @@ final class Schema {
 	 */
 	public static function grantTable(): string {
 		return self::database()->prefix . 'charter_oauth_grants';
+	}
+
+	/**
+	 * Returns the current site's OAuth client table name.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function clientTable(): string {
+		return self::database()->prefix . 'charter_oauth_clients';
+	}
+
+	/**
+	 * Returns the current site's OAuth rate-limit table name.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function rateLimitTable(): string {
+		return self::database()->prefix . 'charter_oauth_rate_limits';
+	}
+
+	/**
+	 * Returns the current site's OAuth audit table name.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function auditTable(): string {
+		return self::database()->prefix . 'charter_oauth_audit';
 	}
 
 	/**
@@ -147,8 +226,11 @@ final class Schema {
 	 * @param \wpdb  $database  WordPress database connection.
 	 * @param string $tableName Current site credential table.
 	 * @param string $grantTableName Current site grant table.
+	 * @param string $clientTableName Current site client table.
+	 * @param string $rateTableName Current site rate-limit table.
+	 * @param string $auditTableName Current site audit table.
 	 */
-	private static function isCurrent( \wpdb $database, string $tableName, string $grantTableName ): bool {
+	private static function isCurrent( \wpdb $database, string $tableName, string $grantTableName, string $clientTableName, string $rateTableName, string $auditTableName ): bool {
 		$sql = $database->prepare( 'SHOW COLUMNS FROM %i', $tableName );
 		if ( ! is_string( $sql ) ) {
 			return false;
@@ -234,7 +316,27 @@ final class Schema {
 			'revocation_reason',
 		);
 
-		return array() === array_diff( $requiredGrant, array_filter( $grantColumns, 'is_string' ) );
+		if ( array() !== array_diff( $requiredGrant, array_filter( $grantColumns, 'is_string' ) ) ) {
+			return false;
+		}
+
+		$requiredTables = array(
+			$clientTableName => array( 'id', 'issuer_digest', 'client_digest', 'issuer', 'client_id', 'client_name', 'redirect_uris', 'status', 'source', 'token_endpoint_auth_method', 'grant_types', 'client_secret_hash', 'metadata_fingerprint', 'created_at', 'last_activity_at', 'authorized_at', 'blocked_at', 'deleted_at' ),
+			$rateTableName   => array( 'bucket_digest', 'window_started_at', 'window_seconds', 'request_count', 'expires_at' ),
+			$auditTableName  => array( 'id', 'occurred_at', 'issuer_digest', 'issuer', 'event_type', 'actor_user_id', 'represented_user_id', 'client_id', 'outcome', 'reason', 'source_address' ),
+		);
+		foreach ( $requiredTables as $requiredTable => $requiredColumns ) {
+			$tableSql = $database->prepare( 'SHOW COLUMNS FROM %i', $requiredTable );
+			if ( ! is_string( $tableSql ) ) {
+				return false;
+			}
+			$tableColumns = $database->get_col( $tableSql ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Installation verifies each authoritative table created above.
+			if ( array() !== array_diff( $requiredColumns, array_filter( $tableColumns, 'is_string' ) ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**

@@ -139,7 +139,10 @@ final class TokenService {
 				&& $grant->userId() === $record->userId()
 				&& $grant->scope() === $record->scope()
 			) {
-				$this->credentials->revokeGrant( $grant->id(), time(), 'rfc7009_revocation' );
+				$timestamp = time();
+				if ( $this->credentials->revokeGrant( $grant->id(), $timestamp, 'rfc7009_revocation' ) ) {
+					$this->clients->markActivity( $record->issuer(), $record->clientId(), $timestamp );
+				}
 			}
 
 			return;
@@ -197,6 +200,7 @@ final class TokenService {
 		if ( null === $issued ) {
 			throw new ProtocolException( 'invalid_grant', 'The authorization code or PKCE verifier is invalid.' );
 		}
+		$this->clients->markActivity( $record->issuer(), $record->clientId(), $timestamp );
 
 		return $this->tokenResponse( $issued, $record );
 	}
@@ -240,10 +244,12 @@ final class TokenService {
 			throw new ProtocolException( 'invalid_scope', 'The requested scope exceeds the approved grant.' );
 		}
 
-		$issued = $this->credentials->rotateRefreshToken( $record, time() );
+		$timestamp = time();
+		$issued    = $this->credentials->rotateRefreshToken( $record, $timestamp );
 		if ( null === $issued ) {
 			throw new ProtocolException( 'invalid_grant', 'The refresh token is invalid.' );
 		}
+		$this->clients->markActivity( $record->issuer(), $record->clientId(), $timestamp );
 
 		$response = $this->tokenResponse( $issued, $record );
 		if ( ! isset( $response['refresh_token'] ) ) {
