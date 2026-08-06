@@ -22,6 +22,12 @@ require_once $charter_tests_directory . '/includes/functions.php';
 tests_add_filter(
 	'muplugins_loaded',
 	static function (): void {
+		if ( ! defined( 'CHARTER_DEVELOPMENT_MODE' ) ) {
+			define( 'CHARTER_DEVELOPMENT_MODE', true );
+		}
+		if ( ! defined( 'CHARTER_DEVELOPMENT_HOSTS' ) ) {
+			define( 'CHARTER_DEVELOPMENT_HOSTS', array( 'example.org' ) );
+		}
 		require_once CHARTER_TEST_ROOT . '/charter.php';
 	}
 );

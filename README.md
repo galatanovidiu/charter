@@ -2,7 +2,9 @@
 
 Charter is a WordPress plugin for a secure, standards-compliant OAuth 2.1 authorization server.
 
-This repository currently contains the installable bootstrap and release infrastructure. Version `0.1.0` does not expose OAuth endpoints, client management, token storage, or an administration interface yet.
+The current development build provides a working authorization and grant lifecycle for pre-registered public and confidential clients. It publishes RFC 8414 and RFC 9728 metadata, uses Authorization Code with mandatory PKCE S256, issues short-lived single-use codes and opaque one-hour access tokens, rotates refresh tokens with replay-family protection, and supports grant-wide RFC 7009 revocation.
+
+Users receive explicit first-use and material-change consent, may reuse an exact active authorization without another prompt, and can inspect or disconnect their own grants under **Profile > Connected Apps**. Password changes, user deletion, and Multisite site-access removal close affected grants. CIMD, Dynamic Client Registration, specialized scopes, broader administration, audit, cleanup, and emergency controls remain under development.
 
 ## Platform requirements
 
@@ -31,6 +33,40 @@ The distributed plugin has no Composer runtime dependencies and does not ship a 
 
 3. Open the URL reported by `wp-env`.
 
+4. In WordPress, open **Settings > Charter OAuth**.
+
+    Charter starts in the **Prepared** state for a supported single-site activation. Verify both exact metadata URLs shown on the page, select the verification checkbox, and click **Enable OAuth**.
+
+    Prepared metadata identifies the canonical issuer and resource without advertising disabled grants or endpoints. The operational capability fields appear after OAuth is enabled.
+
+5. Under **Pre-register a client**, enter its client ID, display name, exact redirect URI, public or confidential type, and continuing-access policy. Native loopback clients may use an HTTP URI on literal `127.0.0.1` or `[::1]`; only the runtime port may vary.
+
+    A confidential-client secret is displayed once in a no-store response. Save it immediately: Charter persists only its password hash and cannot retrieve the original value later. Confidential clients send the secret as `client_secret` in the form-encoded token or revocation request; HTTP Basic authentication is not supported.
+
+Charter uses the canonical bare origin as both the issuer identifier and the default protected-resource identifier. HTTP issuer URLs work only in an explicit local WordPress environment or when `CHARTER_DEVELOPMENT_MODE` is `true`; non-loopback development hosts also require an exact entry in the `CHARTER_DEVELOPMENT_HOSTS` array constant.
+
+## Protect a REST handler
+
+Wrap the exact handler you pass to `register_rest_route()`:
+
+```php
+use GalatanOvidiu\Charter\Rest\ProtectedRoute;
+
+register_rest_route(
+    'example/v1',
+    '/records',
+    ProtectedRoute::assign(
+        array(
+            'methods'             => 'GET',
+            'permission_callback' => static fn (): bool => current_user_can( 'read' ),
+            'callback'            => 'example_get_records',
+        )
+    )
+);
+```
+
+The default assignment requires the `wordpress:access` scope for the site's canonical resource. Charter establishes the represented WordPress user before the existing `permission_callback` runs and restores the prior request identity afterward. Public handlers and requests authenticated with cookies/nonces or Application Passwords continue through WordPress without Bearer validation. A request that combines an existing WordPress identity with a Charter Bearer credential is rejected.
+
 ## Run quality checks
 
 Run the fast local checks:
@@ -44,6 +80,12 @@ Run WordPress integration tests:
 
 ```bash
 npm run test:integration:ci
+```
+
+Run the focused real-HTTP lifecycle through WordPress login, consent, public and confidential code exchange, concurrent refresh replay, grant closure, RFC 7009 revocation, and protected REST requests:
+
+```bash
+npm run test:oauth:http:ci
 ```
 
 Build, verify, activate, and run Plugin Check against the production artifact:

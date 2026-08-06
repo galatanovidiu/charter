@@ -15,8 +15,8 @@
 			<directory suffix="Test.php">tests/Unit</directory>
 		</testsuite>
 		<testsuite name="integration">
-			<directory suffix="Test.php">tests/Integration</directory>
-			<exclude>tests/Integration/Multisite</exclude>
+			<file>tests/Integration/PluginBootstrapTest.php</file>
+			<directory suffix="Test.php">tests/Integration/OAuth</directory>
 		</testsuite>
 		<testsuite name="slice0-multisite">
 			<file>tests/Integration/PluginBootstrapTest.php</file>

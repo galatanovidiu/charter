@@ -11,6 +11,7 @@
 		"WP_DEVELOPMENT_MODE": "plugin"
 	},
 	"mappings": {
-		"wp-content/plugins/charter": "."
+		"wp-content/plugins/charter": ".",
+		"wp-content/mu-plugins": "./tests/fixtures/oauth-first-path/mu-plugins"
 	}
 }

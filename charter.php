@@ -32,4 +32,6 @@ require_once CHARTER_PATH . 'src/Autoloader.php';
 $charter_autoloader = new Autoloader( CHARTER_PATH . 'src' );
 $charter_autoloader->register();
 
+register_activation_hook( CHARTER_FILE, array( Plugin::class, 'activate' ) );
+
 Plugin::boot();
