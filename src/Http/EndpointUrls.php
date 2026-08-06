@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace GalatanOvidiu\Charter\Http;
 
+use InvalidArgumentException;
+
 /**
  * Builds every public endpoint from the one stored canonical issuer.
  *
@@ -38,12 +40,31 @@ final class EndpointUrls {
 	}
 
 	/**
-	 * Returns the root RFC 9728 metadata URL.
+	 * Returns the exact RFC 9728 metadata URL for a registered resource.
 	 *
 	 * @since 0.1.0
+	 *
+	 * @param string|null $resourceIdentifier Exact resource, or null for the default.
+	 * @throws InvalidArgumentException When the resource is outside the issuer.
 	 */
-	public function protectedResourceMetadata(): string {
-		return $this->issuer . '/.well-known/oauth-protected-resource';
+	public function protectedResourceMetadata( ?string $resourceIdentifier = null ): string {
+		if ( null === $resourceIdentifier || $this->issuer === $resourceIdentifier ) {
+			return $this->issuer . '/.well-known/oauth-protected-resource';
+		}
+		if ( ! str_starts_with( $resourceIdentifier, $this->issuer . '/' ) ) {
+			throw new InvalidArgumentException( 'charter_resource_metadata_identifier_invalid' );
+		}
+
+		return $this->issuer . '/.well-known/oauth-protected-resource' . substr( $resourceIdentifier, strlen( $this->issuer ) );
+	}
+
+	/**
+	 * Returns one exact public REST request URL under the canonical issuer.
+	 *
+	 * @param string $route Matched WordPress REST route.
+	 */
+	public function restRoute( string $route ): string {
+		return $this->issuer . '/' . trim( rest_get_url_prefix(), '/' ) . '/' . ltrim( $route, '/' );
 	}
 
 	/**

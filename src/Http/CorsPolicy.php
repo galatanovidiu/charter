@@ -52,13 +52,15 @@ final class CorsPolicy {
 	public function apply( mixed $served, mixed $result, WP_REST_Request $request, mixed $server ): mixed {
 		unset( $result, $server );
 
-		$route = $request->get_route();
-		if ( ! in_array( $route, self::METADATA_ROUTES, true ) && ! in_array( $route, self::NO_CORS_ROUTES, true ) ) {
+		$route           = $request->get_route();
+		$isMetadataRoute = in_array( $route, self::METADATA_ROUTES, true )
+			|| str_starts_with( $route, '/charter/v1/metadata/protected-resource/' );
+		if ( ! $isMetadataRoute && ! in_array( $route, self::NO_CORS_ROUTES, true ) ) {
 			return $served;
 		}
 
 		self::removeCoreCorsHeaders();
-		if ( in_array( $route, self::METADATA_ROUTES, true ) ) {
+		if ( $isMetadataRoute ) {
 			header( 'Access-Control-Allow-Origin: *' );
 		}
 

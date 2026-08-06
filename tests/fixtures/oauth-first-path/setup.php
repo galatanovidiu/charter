@@ -35,6 +35,14 @@ $charterHttpPlugin->clients()->registerPublicClient(
 	array( 'https://client.example.test/callback' )
 );
 
+$charterHttpPlugin->clients()->registerPublicClient(
+	$charterHttpIdentity->issuer(),
+	'charter-http-mcp-client',
+	'Charter HTTP MCP client',
+	array( 'https://mcp-client.example.test/callback' ),
+	true
+);
+
 $charterHttpUser = get_user_by( 'login', 'charter-oauth-user' );
 if ( false === $charterHttpUser ) {
 	$charterHttpUserId = wp_create_user( 'charter-oauth-user', 'charter-http-password', 'charter-oauth-user@example.test' );

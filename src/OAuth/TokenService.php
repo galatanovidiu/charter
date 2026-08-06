@@ -28,14 +28,16 @@ final class TokenService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SiteState       $siteState Site lifecycle and identity.
-	 * @param ClientRegistry  $clients Client registry.
-	 * @param CredentialStore $credentials Grant and credential persistence.
+	 * @param SiteState            $siteState Site lifecycle and identity.
+	 * @param ClientRegistry       $clients Client registry.
+	 * @param CredentialStore      $credentials Grant and credential persistence.
+	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly ClientRegistry $clients,
-		private readonly CredentialStore $credentials
+		private readonly CredentialStore $credentials,
+		private readonly AccessPolicyProvider $accessPolicy
 	) {
 	}
 
@@ -175,12 +177,12 @@ final class TokenService {
 
 		$timestamp = time();
 		$record    = $this->credentials->find( CredentialStore::AUTHORIZATION_CODE, $identity->issuer(), $code );
+		$policy    = $this->accessPolicy->forIssuer( $identity->issuer() );
 		if (
 			null === $record
 			|| $record->issuer() !== $identity->issuer()
-			|| $record->resource() !== $identity->issuer()
 			|| $record->clientId() !== $client->clientId()
-			|| $record->scope() !== AuthorizationService::GENERAL_SCOPE
+			|| ! $policy->bindingAvailable( $record->resource(), $record->scope() )
 			|| ! UserEligibility::isActiveForCurrentSite( $record->userId() )
 			|| ( null === $record->consumedAt() && $record->expiresAt() < $timestamp )
 			|| ! hash_equals( $record->codeChallenge(), self::s256Challenge( $verifier ) )
@@ -221,12 +223,12 @@ final class TokenService {
 
 		$presented = self::requiredParameter( $parameters, 'refresh_token', 256 );
 		$record    = $this->credentials->find( CredentialStore::REFRESH_TOKEN, $identity->issuer(), $presented );
+		$policy    = $this->accessPolicy->forIssuer( $identity->issuer() );
 		if (
 			null === $record
 			|| $record->issuer() !== $identity->issuer()
-			|| $record->resource() !== $identity->issuer()
 			|| $record->clientId() !== $client->clientId()
-			|| $record->scope() !== AuthorizationService::GENERAL_SCOPE
+			|| ! $policy->bindingAvailable( $record->resource(), $record->scope() )
 			|| ! $record->continuingAccess()
 			|| ! UserEligibility::isActiveForCurrentSite( $record->userId() )
 		) {
@@ -271,6 +273,7 @@ final class TokenService {
 			throw new ProtocolException( 'invalid_token', 'The access token is invalid.', 401 );
 		}
 
+		$policy  = $this->accessPolicy->forIssuer( $identity->issuer() );
 		$record  = $this->credentials->find( CredentialStore::ACCESS_TOKEN, $identity->issuer(), $token );
 		$grantId = null === $record ? null : $record->grantId();
 		$grant   = is_int( $grantId ) ? $this->credentials->findGrant( $grantId ) : null;
@@ -280,6 +283,8 @@ final class TokenService {
 			|| ! $record->isActiveAt( time() )
 			|| ! $grant->isActiveAt( time() )
 			|| $record->issuer() !== $identity->issuer()
+			|| ! $policy->assignmentAvailable( $resourceIdentifier, $requiredScopes )
+			|| ! $policy->bindingAvailable( $record->resource(), $record->scope() )
 			|| $record->resource() !== $resourceIdentifier
 			|| $grant->issuer() !== $record->issuer()
 			|| $grant->resource() !== $record->resource()

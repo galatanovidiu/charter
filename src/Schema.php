@@ -19,7 +19,7 @@ use RuntimeException;
 final class Schema {
 
 	private const VERSION_OPTION = 'charter_oauth_schema_version';
-	private const VERSION        = '5';
+	private const VERSION        = '6';
 
 	/**
 	 * Reports whether the current site's expected schema version is installed.

@@ -330,7 +330,7 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 		$plugin   = Plugin::boot();
 		$resolver = new ClientMetadataResolver( $plugin->clients(), $plugin->clientMetadataSnapshots(), new StaticHostAddressResolver(), $fetcher );
 
-		return new AuthorizationService( $plugin->siteState(), $plugin->clients(), $plugin->credentials(), $resolver, $plugin->rateLimiter(), $plugin->audit() );
+		return new AuthorizationService( $plugin->siteState(), $plugin->clients(), $plugin->credentials(), $resolver, $plugin->rateLimiter(), $plugin->audit(), $plugin->accessPolicy() );
 	}
 
 	/**

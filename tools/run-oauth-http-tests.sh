@@ -76,6 +76,7 @@ authorize_logged_in() {
 	local state=$4
 	local verifier=$5
 	local prefix=$6
+	local resource=${7:-${charter_http_issuer}}
 	local authorization_url
 	local status
 	local transaction
@@ -100,7 +101,7 @@ authorize_logged_in() {
 			PHP_QUERY_RFC3986
 		);
 		echo $argv[7] . "&" . $query;
-	' "${verifier}" "${client_id}" "${redirect_uri}" "${charter_http_issuer}" "${scope}" "${state}" "${charter_http_authorization_endpoint}")"
+	' "${verifier}" "${client_id}" "${redirect_uri}" "${resource}" "${scope}" "${state}" "${charter_http_authorization_endpoint}")"
 
 	status="$(curl --silent --show-error \
 		-b "${charter_http_tmp}/cookies.txt" \
@@ -574,6 +575,141 @@ charter_http_status="$(curl --silent --show-error \
 	-w '%{http_code}' \
 	"${charter_http_issuer}/wp-json/charter-http/v1/protected")"
 assert_status 401 "${charter_http_status}" 'RFC 7009 grant-wide descendant closure'
+
+charter_http_mcp_resource="${charter_http_issuer}/wp-json/charter-http/v1/mcp"
+charter_http_mcp_metadata="${charter_http_issuer}/.well-known/oauth-protected-resource/wp-json/charter-http/v1/mcp"
+charter_http_status="$(curl --silent --show-error \
+	-H 'Origin: https://mcp-client.example.test' \
+	-D "${charter_http_tmp}/mcp-metadata.headers" \
+	-o "${charter_http_tmp}/mcp-metadata.json" \
+	-w '%{http_code}' \
+	"${charter_http_mcp_metadata}")"
+assert_status 200 "${charter_http_status}" 'MCP protected-resource metadata'
+if [[ "$(json_field "${charter_http_tmp}/mcp-metadata.json" resource)" != "${charter_http_mcp_resource}" ]]; then
+	echo 'MCP protected-resource metadata did not identify the exact path resource.' >&2
+	exit 1
+fi
+if ! grep -q '"scopes_supported":\["charter-http-mcp:access"\]' "${charter_http_tmp}/mcp-metadata.json"; then
+	echo 'MCP protected-resource metadata did not publish its exact registered scope.' >&2
+	exit 1
+fi
+if ! grep -qi '^Access-Control-Allow-Origin: \*' "${charter_http_tmp}/mcp-metadata.headers"; then
+	echo 'MCP protected-resource metadata did not preserve wildcard discovery CORS.' >&2
+	exit 1
+fi
+
+charter_http_mcp_verifier='zyxwvutsrqponmlkjihgfedcba9876543210ABCDEFG'
+authorize_logged_in \
+	'charter-http-mcp-client' \
+	'https://mcp-client.example.test/callback' \
+	'charter-http-mcp:access offline_access' \
+	'mcp-profile-state' \
+	"${charter_http_mcp_verifier}" \
+	'mcp-profile' \
+	"${charter_http_mcp_resource}"
+charter_http_mcp_code="${charter_http_authorized_code}"
+if ! grep -q 'Charter HTTP MCP access' "${charter_http_tmp}/mcp-profile-consent.html" || ! grep -q 'Use the focused MCP-compatible server as your WordPress account.' "${charter_http_tmp}/mcp-profile-consent.html"; then
+	echo 'MCP consent did not present the registered user-facing scope name and description.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/mcp-wrong-resource.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=authorization_code' \
+	--data-urlencode 'client_id=charter-http-mcp-client' \
+	--data-urlencode "code=${charter_http_mcp_code}" \
+	--data-urlencode "code_verifier=${charter_http_mcp_verifier}" \
+	--data-urlencode 'redirect_uri=https://mcp-client.example.test/callback' \
+	--data-urlencode "resource=${charter_http_issuer}" \
+	"${charter_http_token_endpoint}")"
+assert_status 400 "${charter_http_status}" 'MCP cross-resource code exchange rejection'
+if [[ "$(json_field "${charter_http_tmp}/mcp-wrong-resource.json" error)" != 'invalid_target' ]]; then
+	echo 'MCP cross-resource exchange did not return invalid_target.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/mcp-token.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=authorization_code' \
+	--data-urlencode 'client_id=charter-http-mcp-client' \
+	--data-urlencode "code=${charter_http_mcp_code}" \
+	--data-urlencode "code_verifier=${charter_http_mcp_verifier}" \
+	--data-urlencode 'redirect_uri=https://mcp-client.example.test/callback' \
+	--data-urlencode "resource=${charter_http_mcp_resource}" \
+	"${charter_http_token_endpoint}")"
+assert_status 200 "${charter_http_status}" 'MCP authorization code exchange'
+if [[ "$(json_field "${charter_http_tmp}/mcp-token.json" resource)" != "${charter_http_mcp_resource}" ]] || [[ "$(json_field "${charter_http_tmp}/mcp-token.json" scope)" != 'charter-http-mcp:access' ]]; then
+	echo 'MCP token response did not retain its exact resource and canonical scope.' >&2
+	exit 1
+fi
+charter_http_mcp_access="$(json_field "${charter_http_tmp}/mcp-token.json" access_token)"
+charter_http_mcp_refresh="$(json_field "${charter_http_tmp}/mcp-token.json" refresh_token)"
+
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_mcp_access}" \
+	-o "${charter_http_tmp}/mcp-protected.json" \
+	-w '%{http_code}' \
+	"${charter_http_mcp_resource}")"
+assert_status 200 "${charter_http_status}" 'MCP Bearer-protected request'
+if [[ "$(json_field "${charter_http_tmp}/mcp-protected.json" resource)" != "${charter_http_mcp_resource}" ]]; then
+	echo 'MCP route did not receive its exact OAuth resource context.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_mcp_access}" \
+	-o "${charter_http_tmp}/mcp-default-resource.json" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-json/charter-http/v1/protected")"
+assert_status 401 "${charter_http_status}" 'MCP token default-resource rejection'
+
+charter_http_status="$(curl --silent --show-error \
+	-D "${charter_http_tmp}/mcp-challenge.headers" \
+	-o "${charter_http_tmp}/mcp-challenge.json" \
+	-w '%{http_code}' \
+	"${charter_http_mcp_resource}")"
+assert_status 401 "${charter_http_status}" 'MCP exact-resource challenge'
+if ! grep -Fqi "resource_metadata=\"${charter_http_mcp_metadata}\"" "${charter_http_tmp}/mcp-challenge.headers"; then
+	echo 'MCP challenge did not reference exact path-specific protected-resource metadata.' >&2
+	exit 1
+fi
+
+"${charter_wp_env[@]}" run cli --config=.wp-env.test.json wp option update charter_http_disable_mcp_profile 1
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/mcp-missing-provider-metadata.json" \
+	-w '%{http_code}' \
+	"${charter_http_mcp_metadata}")"
+assert_status 404 "${charter_http_status}" 'missing MCP provider metadata rejection'
+curl --fail --silent --show-error \
+	"${charter_http_issuer}/.well-known/oauth-authorization-server" \
+	-o "${charter_http_tmp}/mcp-missing-provider-authorization-metadata.json"
+if grep -q 'charter-http-mcp:access' "${charter_http_tmp}/mcp-missing-provider-authorization-metadata.json"; then
+	echo 'Authorization-server metadata retained a scope whose provider stopped registering.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_mcp_access}" \
+	-o "${charter_http_tmp}/mcp-missing-provider-access.json" \
+	-w '%{http_code}' \
+	"${charter_http_mcp_resource}")"
+assert_status 401 "${charter_http_status}" 'missing MCP provider access rejection'
+
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/mcp-missing-provider-refresh.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=refresh_token' \
+	--data-urlencode 'client_id=charter-http-mcp-client' \
+	--data-urlencode "refresh_token=${charter_http_mcp_refresh}" \
+	--data-urlencode "resource=${charter_http_mcp_resource}" \
+	"${charter_http_token_endpoint}")"
+assert_status 400 "${charter_http_status}" 'missing MCP provider refresh rejection'
+if [[ "$(json_field "${charter_http_tmp}/mcp-missing-provider-refresh.json" error)" != 'invalid_grant' ]]; then
+	echo 'A missing MCP scope provider did not fail refresh closed.' >&2
+	exit 1
+fi
 
 echo 'OAuth lifecycle real-HTTP verification passed.'
 

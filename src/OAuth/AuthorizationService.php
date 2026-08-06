@@ -21,7 +21,7 @@ use GalatanOvidiu\Charter\Site\SiteState;
  */
 final class AuthorizationService {
 
-	public const GENERAL_SCOPE        = 'wordpress:access';
+	public const GENERAL_SCOPE        = AccessPolicy::GENERAL_SCOPE;
 	public const OFFLINE_ACCESS_SCOPE = 'offline_access';
 
 	/**
@@ -35,6 +35,7 @@ final class AuthorizationService {
 	 * @param ClientMetadataResolver $clientMetadata Authorization-time client onboarding.
 	 * @param RateLimiter            $rateLimiter OAuth abuse counters.
 	 * @param AuditLog               $audit Security event ledger.
+	 * @param AccessPolicyProvider   $accessPolicy Active exact resource and scope registrations.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
@@ -42,7 +43,8 @@ final class AuthorizationService {
 		private readonly CredentialStore $credentials,
 		private readonly ClientMetadataResolver $clientMetadata,
 		private readonly RateLimiter $rateLimiter,
-		private readonly AuditLog $audit
+		private readonly AuditLog $audit,
+		private readonly AccessPolicyProvider $accessPolicy
 	) {
 	}
 
@@ -93,29 +95,42 @@ final class AuthorizationService {
 		$resource = array_key_exists( 'resource', $parameters )
 			? self::requiredParameter( $parameters, 'resource', 2048 )
 			: $issuer;
-		if ( $issuer !== $resource ) {
+		$policy   = $this->accessPolicy->forIssuer( $issuer );
+		if ( ! $policy->hasResource( $resource ) ) {
 			throw new ProtocolException( 'invalid_target', 'The requested protected resource is invalid.', 400, $redirectUri, $state );
 		}
 
-		$scopeInput  = array_key_exists( 'scope', $parameters )
+		$scopeInput = array_key_exists( 'scope', $parameters )
 			? self::requiredParameter( $parameters, 'scope', 1024 )
-			: self::GENERAL_SCOPE;
+			: ( in_array( self::GENERAL_SCOPE, $policy->scopesForResource( $resource ), true ) ? self::GENERAL_SCOPE : '' );
+		if ( '' === $scopeInput ) {
+			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
+		}
 		$scopeTokens = preg_split( '/ +/', trim( $scopeInput ) );
 		if ( ! is_array( $scopeTokens ) || array() === $scopeTokens || in_array( '', $scopeTokens, true ) ) {
 			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
 		}
-		$scopeTokens = array_values( array_unique( $scopeTokens ) );
-		if (
-			! in_array( self::GENERAL_SCOPE, $scopeTokens, true )
-			|| array() !== array_diff( $scopeTokens, array( self::GENERAL_SCOPE, self::OFFLINE_ACCESS_SCOPE ) )
-		) {
-			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
-		}
+		$scopeTokens      = array_values( array_unique( $scopeTokens ) );
 		$continuingAccess = in_array( self::OFFLINE_ACCESS_SCOPE, $scopeTokens, true )
 			|| $client->supportsGrantType( Client::GRANT_REFRESH_TOKEN );
+		$delegatedScopes  = array_values( array_diff( $scopeTokens, array( self::OFFLINE_ACCESS_SCOPE ) ) );
+		$canonicalScope   = $policy->canonicalScope( $resource, $delegatedScopes );
+		if ( null === $canonicalScope ) {
+			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
+		}
 		// phpcs:enable WordPress.Security.EscapeOutput.ExceptionNotEscaped
 
-		return new AuthorizationRequest( $issuer, $resource, $client, $redirectUri, self::GENERAL_SCOPE, $challenge, $state, $continuingAccess );
+		return new AuthorizationRequest(
+			$issuer,
+			$resource,
+			$client,
+			$redirectUri,
+			$canonicalScope,
+			$challenge,
+			$state,
+			$continuingAccess,
+			$policy->consentScopes( $canonicalScope )
+		);
 	}
 
 	/**
@@ -168,11 +183,12 @@ final class AuthorizationService {
 
 		$timestamp = time();
 		$record    = $this->credentials->find( CredentialStore::AUTHORIZATION_REQUEST, $identity->issuer(), $transaction );
+		$policy    = $this->accessPolicy->forIssuer( $identity->issuer() );
 		if (
 			null === $record
 			|| ! $record->isActiveAt( $timestamp )
 			|| $record->issuer() !== $identity->issuer()
-			|| $record->resource() !== $identity->issuer()
+			|| ! $policy->bindingAvailable( $record->resource(), $record->scope() )
 			|| $record->userId() !== $userId
 			|| ! UserEligibility::isActiveForCurrentSite( $userId )
 		) {

@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter\Http;
 
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
+use GalatanOvidiu\Charter\OAuth\AccessPolicyProvider;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\Site\SiteState;
 use WP_Error;
@@ -17,7 +18,7 @@ use WP_REST_Request;
 use WP_REST_Response;
 
 /**
- * Publishes truthful RFC 8414 and root RFC 9728 metadata.
+ * Publishes truthful RFC 8414 and exact-resource RFC 9728 metadata.
  *
  * @since 0.1.0
  */
@@ -28,10 +29,12 @@ final class MetadataController {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SiteState $siteState Site lifecycle and identity.
+	 * @param SiteState            $siteState Site lifecycle and identity.
+	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
 	 */
 	public function __construct(
-		private readonly SiteState $siteState
+		private readonly SiteState $siteState,
+		private readonly AccessPolicyProvider $accessPolicy
 	) {
 	}
 
@@ -51,6 +54,11 @@ final class MetadataController {
 			'index.php?rest_route=/charter/v1/metadata/protected-resource',
 			'top'
 		);
+		add_rewrite_rule(
+			'^\.well-known/oauth-protected-resource/(.+)$',
+			'index.php?rest_route=/charter/v1/metadata/protected-resource/$matches[1]',
+			'top'
+		);
 	}
 
 	/**
@@ -65,6 +73,16 @@ final class MetadataController {
 			array(
 				'methods'             => 'GET',
 				'callback'            => array( $this, 'authorizationServer' ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		register_rest_route(
+			'charter/v1',
+			'/metadata/protected-resource/(?P<resource_path>.+)',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'protectedResource' ),
 				'permission_callback' => '__return_true',
 			)
 		);
@@ -97,8 +115,9 @@ final class MetadataController {
 
 		$data = array( 'issuer' => $identity->issuer() );
 		if ( $this->siteState->isEnabled() ) {
-			$urls = new EndpointUrls( $identity->issuer() );
-			$data = array(
+			$urls   = new EndpointUrls( $identity->issuer() );
+			$policy = $this->accessPolicy->forIssuer( $identity->issuer() );
+			$data   = array(
 				'issuer'                                => $identity->issuer(),
 				'authorization_endpoint'                => $urls->authorizationEndpoint(),
 				'token_endpoint'                        => $urls->tokenEndpoint(),
@@ -109,7 +128,7 @@ final class MetadataController {
 				'code_challenge_methods_supported'      => array( 'S256' ),
 				'token_endpoint_auth_methods_supported' => array( 'none', 'client_secret_post' ),
 				'revocation_endpoint_auth_methods_supported' => array( 'none', 'client_secret_post' ),
-				'scopes_supported'                      => array( AuthorizationService::GENERAL_SCOPE, AuthorizationService::OFFLINE_ACCESS_SCOPE ),
+				'scopes_supported'                      => array_merge( $policy->scopeIdentifiers(), array( AuthorizationService::OFFLINE_ACCESS_SCOPE ) ),
 				'authorization_response_iss_parameter_supported' => true,
 				'client_id_metadata_document_supported' => true,
 			);
@@ -122,7 +141,7 @@ final class MetadataController {
 	}
 
 	/**
-	 * Returns RFC 9728 metadata for the bare-origin default resource.
+	 * Returns RFC 9728 metadata for one registered exact resource.
 	 *
 	 * @since 0.1.0
 	 *
@@ -130,19 +149,26 @@ final class MetadataController {
 	 * @return WP_REST_Response|WP_Error Metadata or a fail-closed not-found response.
 	 */
 	public function protectedResource( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-		unset( $request );
 		$identity = $this->siteState->identity();
 		if ( null === $identity || ! $this->siteState->publishesMetadata() || ! $this->siteState->requestMatchesIdentity() ) {
 			return new WP_Error( 'rest_no_route', 'No route was found matching the URL and request method.', array( 'status' => 404 ) );
 		}
 
-		$data = array( 'resource' => $identity->issuer() );
+		$resourcePath = $request->get_param( 'resource_path' );
+		$resourcePath = is_string( $resourcePath ) ? ltrim( $resourcePath, '/' ) : '';
+		$resource     = '' === $resourcePath ? $identity->issuer() : $identity->issuer() . '/' . $resourcePath;
+		$policy       = $this->accessPolicy->forIssuer( $identity->issuer() );
+		if ( ! $policy->hasResource( $resource ) ) {
+			return new WP_Error( 'rest_no_route', 'No route was found matching the URL and request method.', array( 'status' => 404 ) );
+		}
+
+		$data = array( 'resource' => $resource );
 		if ( $this->siteState->isEnabled() ) {
 			$data = array(
-				'resource'                 => $identity->issuer(),
+				'resource'                 => $resource,
 				'authorization_servers'    => array( $identity->issuer() ),
 				'bearer_methods_supported' => array( 'header' ),
-				'scopes_supported'         => array( AuthorizationService::GENERAL_SCOPE ),
+				'scopes_supported'         => $policy->scopesForResource( $resource ),
 			);
 		}
 

@@ -21,14 +21,15 @@ final class AuthorizationRequest {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param string      $issuer        Exact issuer.
-	 * @param string      $resourceIdentifier Exact protected resource.
-	 * @param Client      $client        Exact active client.
-	 * @param string      $redirectUri   Exact bound redirect URI.
-	 * @param string      $scope         Canonical scope string.
-	 * @param string      $codeChallenge S256 PKCE challenge.
-	 * @param string|null $state         Optional client state.
-	 * @param bool        $continuingAccessRequested Whether refresh access was requested.
+	 * @param string                 $issuer        Exact issuer.
+	 * @param string                 $resourceIdentifier Exact protected resource.
+	 * @param Client                 $client        Exact active client.
+	 * @param string                 $redirectUri   Exact bound redirect URI.
+	 * @param string                 $scope         Canonical scope string.
+	 * @param string                 $codeChallenge S256 PKCE challenge.
+	 * @param string|null            $state         Optional client state.
+	 * @param bool                   $continuingAccessRequested Whether refresh access was requested.
+	 * @param array<ScopeDefinition> $consentScopes User-facing registered scope definitions.
 	 */
 	public function __construct(
 		private readonly string $issuer,
@@ -38,7 +39,8 @@ final class AuthorizationRequest {
 		private readonly string $scope,
 		private readonly string $codeChallenge,
 		private readonly ?string $state,
-		private readonly bool $continuingAccessRequested = false
+		private readonly bool $continuingAccessRequested = false,
+		private readonly array $consentScopes = array()
 	) {
 	}
 
@@ -112,5 +114,14 @@ final class AuthorizationRequest {
 	 */
 	public function continuingAccessRequested(): bool {
 		return $this->continuingAccessRequested;
+	}
+
+	/**
+	 * Returns user-facing registered scope definitions.
+	 *
+	 * @return array<ScopeDefinition> Consent scope definitions.
+	 */
+	public function consentScopes(): array {
+		return $this->consentScopes;
 	}
 }

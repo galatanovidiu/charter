@@ -147,6 +147,7 @@ final class AuthorizationController {
 		$redirectHost    = wp_parse_url( $request->redirectUri(), PHP_URL_HOST );
 		$redirectHost    = is_string( $redirectHost ) ? $redirectHost : $request->redirectUri();
 		$nonce           = wp_nonce_field( 'charter_oauth_consent:' . $transaction, '_wpnonce', true, false );
+		$scopeHtml       = self::scopeConsentHtml( $request );
 		$loopbackWarning = self::hasOnlyLoopbackRedirects( $request )
 			? '<p><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
 			: '';
@@ -157,8 +158,8 @@ final class AuthorizationController {
 			esc_html__( 'is requesting delegated access.', 'charter' ),
 			esc_html__( 'Protected resource', 'charter' ),
 			esc_html( $request->resource() ),
-			esc_html__( 'Scope', 'charter' ),
-			esc_html( $request->scope() ),
+			esc_html__( 'Requested access', 'charter' ),
+			$scopeHtml,
 			esc_html__( 'Redirect host', 'charter' ),
 			esc_html( $redirectHost ),
 			esc_html__( 'Continuing access', 'charter' ),
@@ -176,6 +177,25 @@ final class AuthorizationController {
 
 		$this->sendHtmlHeaders();
 		wp_die( $html, esc_html__( 'OAuth authorization', 'charter' ), array( 'response' => 200 ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Every dynamic value in the assembled consent HTML is escaped.
+	}
+
+	/**
+	 * Renders registered user-facing scope names and descriptions.
+	 *
+	 * @param AuthorizationRequest $request Validated authorization request.
+	 */
+	private static function scopeConsentHtml( AuthorizationRequest $request ): string {
+		$items = array();
+		foreach ( $request->consentScopes() as $scope ) {
+			$items[] = sprintf(
+				'<li><strong>%1$s</strong> <code>%2$s</code><br>%3$s</li>',
+				esc_html( $scope->name() ),
+				esc_html( $scope->identifier() ),
+				esc_html( $scope->description() )
+			);
+		}
+
+		return '<ul>' . implode( '', $items ) . '</ul>';
 	}
 
 	/**

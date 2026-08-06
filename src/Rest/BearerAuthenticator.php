@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace GalatanOvidiu\Charter\Rest;
 
+use GalatanOvidiu\Charter\Http\EndpointUrls;
+use GalatanOvidiu\Charter\OAuth\AccessPolicyProvider;
 use GalatanOvidiu\Charter\OAuth\AccessTokenContext;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
 use GalatanOvidiu\Charter\OAuth\TokenService;
@@ -49,7 +51,7 @@ final class BearerAuthenticator {
 	/**
 	 * Errors owned by this boundary and eligible for challenge projection.
 	 *
-	 * @var SplObjectStorage<WP_Error, array{error: string|null, description: string, status: int, scopes: array<string>}>
+	 * @var SplObjectStorage<WP_Error, array{error: string|null, description: string, status: int, scopes: array<string>, resource_metadata: string|null}>
 	 */
 	private SplObjectStorage $errors;
 
@@ -65,12 +67,14 @@ final class BearerAuthenticator {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SiteState    $siteState Site lifecycle and identity.
-	 * @param TokenService $tokens    Access-token validator.
+	 * @param SiteState            $siteState Site lifecycle and identity.
+	 * @param TokenService         $tokens    Access-token validator.
+	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
-		private readonly TokenService $tokens
+		private readonly TokenService $tokens,
+		private readonly AccessPolicyProvider $accessPolicy
 	) {
 		$this->frames       = new WeakMap();
 		$this->requestModes = new WeakMap();
@@ -130,23 +134,23 @@ final class BearerAuthenticator {
 		if ( ! $hasBearerAttempt ) {
 			$this->requestModes[ $request ] = $isWordPressAuth ? self::MODE_LEGACY : self::MODE_REJECTED;
 
-			return $isWordPressAuth ? $response : $this->error( self::MISSING_CREDENTIAL, null, 'Bearer authentication is required.', 401, $assignment->requiredScopes() );
+			return $isWordPressAuth ? $response : $this->error( self::MISSING_CREDENTIAL, null, 'Bearer authentication is required.', 401, $assignment->requiredScopes(), $this->resourceMetadata( $assignment, $request ) );
 		}
 
 		if ( $isWordPressAuth ) {
 			$this->requestModes[ $request ] = self::MODE_REJECTED;
-			return $this->error( 'invalid_request', 'invalid_request', 'Use either WordPress authentication or Bearer authentication, not both.', 400, array() );
+			return $this->error( 'invalid_request', 'invalid_request', 'Use either WordPress authentication or Bearer authentication, not both.', 400, array(), $this->resourceMetadata( $assignment, $request ) );
 		}
 
 		if ( 1 !== preg_match( '/^Bearer ([A-Za-z0-9_-]{20,256})$/Di', $authorizationHeader, $matches ) ) {
 			$this->requestModes[ $request ] = self::MODE_REJECTED;
-			return $this->error( 'invalid_request', 'invalid_request', 'The request uses invalid Bearer transport.', 400, array() );
+			return $this->error( 'invalid_request', 'invalid_request', 'The request uses invalid Bearer transport.', 400, array(), $this->resourceMetadata( $assignment, $request ) );
 		}
 
 		$identity = $this->siteState->identity();
 		if ( null === $identity ) {
 			$this->requestModes[ $request ] = self::MODE_REJECTED;
-			return $this->error( 'invalid_token', 'invalid_token', 'The access token is invalid.', 401, array() );
+			return $this->error( 'invalid_token', 'invalid_token', 'The access token is invalid.', 401, array(), null );
 		}
 
 		try {
@@ -162,7 +166,8 @@ final class BearerAuthenticator {
 				$exception->error(),
 				$exception->getMessage(),
 				$exception->status(),
-				'insufficient_scope' === $exception->error() ? $assignment->requiredScopes() : array()
+				'insufficient_scope' === $exception->error() ? $assignment->requiredScopes() : array(),
+				$this->resourceMetadata( $assignment, $request )
 			);
 		}
 
@@ -203,7 +208,7 @@ final class BearerAuthenticator {
 			'error_description' => $details['description'],
 		);
 		$projected = new WP_REST_Response( $body, $details['status'] );
-		$projected->header( 'WWW-Authenticate', self::challenge( $details['error'], $details['scopes'] ) );
+		$projected->header( 'WWW-Authenticate', self::challenge( $details['error'], $details['scopes'], $details['resource_metadata'] ) );
 
 		return $projected;
 	}
@@ -302,34 +307,40 @@ final class BearerAuthenticator {
 	 * @param string        $description Safe public description.
 	 * @param int           $status      HTTP status.
 	 * @param array<string> $scopes      Challenge scopes.
+	 * @param string|null   $resourceMetadata Exact RFC 9728 metadata URL when challenge-safe.
 	 */
-	private function error( string $code, ?string $oauthError, string $description, int $status, array $scopes ): WP_Error {
+	private function error( string $code, ?string $oauthError, string $description, int $status, array $scopes, ?string $resourceMetadata ): WP_Error {
 		$error                  = new WP_Error( $code, $description, array( 'status' => $status ) );
 		$this->errors[ $error ] = array(
-			'error'       => $oauthError,
-			'description' => $description,
-			'status'      => $status,
-			'scopes'      => $scopes,
+			'error'             => $oauthError,
+			'description'       => $description,
+			'status'            => $status,
+			'scopes'            => $scopes,
+			'resource_metadata' => $resourceMetadata,
 		);
 
 		return $error;
 	}
 
 	/**
-	 * Builds a Bearer challenge without an inexact resource_metadata reference.
+	 * Builds a Bearer challenge with an exact resource_metadata reference only.
 	 *
 	 * @since 0.1.0
 	 *
 	 * @param string|null   $error  Optional OAuth error.
 	 * @param array<string> $scopes Exact required scopes.
+	 * @param string|null   $resourceMetadata Exact RFC 9728 metadata URL.
 	 */
-	private static function challenge( ?string $error, array $scopes ): string {
+	private static function challenge( ?string $error, array $scopes, ?string $resourceMetadata ): string {
 		$parameters = array();
 		if ( null !== $error ) {
 			$parameters['error'] = $error;
 		}
 		if ( array() !== $scopes ) {
 			$parameters['scope'] = implode( ' ', $scopes );
+		}
+		if ( null !== $resourceMetadata ) {
+			$parameters['resource_metadata'] = $resourceMetadata;
 		}
 
 		$parts = array();
@@ -338,6 +349,35 @@ final class BearerAuthenticator {
 		}
 
 		return 'Bearer' . ( array() === $parts ? '' : ' ' . implode( ', ', $parts ) );
+	}
+
+	/**
+	 * Returns challenge metadata only when the assigned audience is the exact
+	 * public URL selected by this REST request.
+	 *
+	 * @param RouteAssignment $assignment Exact handler assignment.
+	 * @param WP_REST_Request $request Matched request.
+	 */
+	private function resourceMetadata( RouteAssignment $assignment, WP_REST_Request $request ): ?string {
+		$identity = $this->siteState->identity();
+		if ( null === $identity ) {
+			return null;
+		}
+
+		$resource = $assignment->resource( $identity->issuer() );
+		if ( $identity->issuer() === $resource ) {
+			return null;
+		}
+		$policy = $this->accessPolicy->forIssuer( $identity->issuer() );
+		$urls   = new EndpointUrls( $identity->issuer() );
+		if (
+			! $policy->assignmentAvailable( $resource, $assignment->requiredScopes() )
+			|| $resource !== $urls->restRoute( $request->get_route() )
+		) {
+			return null;
+		}
+
+		return $urls->protectedResourceMetadata( $resource );
 	}
 
 	/**

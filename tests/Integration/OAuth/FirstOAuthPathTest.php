@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter\Tests\Integration\OAuth;
 
 use GalatanOvidiu\Charter\Http\EndpointUrls;
+use GalatanOvidiu\Charter\OAuth\AccessPolicy;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
 use GalatanOvidiu\Charter\OAuth\Client;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
@@ -38,6 +39,17 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 	private const CONFIDENTIAL_REDIRECT_URI   = 'https://backend.example.test/callback';
 	private const PUBLIC_REFRESH_CLIENT_ID    = 'charter-public-refresh-client';
 	private const PUBLIC_REFRESH_REDIRECT_URI = 'http://127.0.0.1:4000/callback';
+	private const MCP_CLIENT_ID               = 'charter-mcp-profile-client';
+	private const MCP_REDIRECT_URI            = 'https://mcp-client.example.test/callback';
+	private const MCP_SCOPE                   = 'example-mcp:access';
+	private const MCP_MANAGE_SCOPE            = 'example-mcp:manage';
+
+	/**
+	 * Whether the simulated MCP integration provides its registrations.
+	 *
+	 * @var bool
+	 */
+	private bool $mcpProviderAvailable = true;
 
 	/**
 	 * Test WordPress REST server.
@@ -103,6 +115,17 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 				array( self::REDIRECT_URI )
 			)
 		);
+		self::assertTrue(
+			$plugin->clients()->registerPublicClient(
+				$this->issuer,
+				self::MCP_CLIENT_ID,
+				'Example MCP client',
+				array( self::MCP_REDIRECT_URI ),
+				true
+			)
+		);
+		$this->mcpProviderAvailable = true;
+		add_action( 'charter_oauth_register_access', array( $this, 'registerMcpAccess' ), 10, 2 );
 
 		$this->userId = self::factory()->user->create( array( 'role' => 'subscriber' ) );
 		wp_set_current_user( 0 );
@@ -121,6 +144,7 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		remove_action( 'rest_api_init', array( $this, 'registerTestRoutes' ), 20 );
+		remove_action( 'charter_oauth_register_access', array( $this, 'registerMcpAccess' ), 10 );
 		$plugin = Plugin::boot();
 		$plugin->credentials()->deleteAll();
 		$plugin->clients()->deleteAll();
@@ -834,9 +858,12 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertSame( 401, $invalid->get_status() );
 		self::assertSame( 'Bearer error="invalid_token"', $invalid->get_headers()['WWW-Authenticate'] );
 
-		$scope = $this->dispatchBearer( '/charter-test/v1/specialized', $token );
-		self::assertSame( 403, $scope->get_status() );
-		self::assertSame( 'Bearer error="insufficient_scope", scope="example:special"', $scope->get_headers()['WWW-Authenticate'] );
+		$scope = $this->dispatchBearer( '/charter-test/v1/mcp', $token );
+		self::assertSame( 401, $scope->get_status() );
+		self::assertSame(
+			'Bearer error="invalid_token", resource_metadata="' . ( new EndpointUrls( $this->issuer ) )->protectedResourceMetadata( $this->mcpResource() ) . '"',
+			$scope->get_headers()['WWW-Authenticate']
+		);
 
 		$resource = $this->dispatchBearer( '/charter-test/v1/other-resource', $token );
 		self::assertSame( 401, $resource->get_status() );
@@ -880,6 +907,196 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Verifies specialized MCP-compatible resource, scope, lifecycle, and fail-closed behavior.
+	 */
+	public function testSpecializedResourceAndScopeRemainExactThroughCredentialLifecycle(): void {
+		$this->enableIssuer();
+		$plugin           = Plugin::boot();
+		$authorization    = $plugin->authorization();
+		$parameters       = $this->mcpAuthorizationParameters( self::MCP_SCOPE . ' ' . AuthorizationService::OFFLINE_ACCESS_SCOPE );
+		$serverMetadata   = $this->dispatch( 'GET', '/charter/v1/metadata/authorization-server' );
+		$resourceMetadata = $this->dispatch( 'GET', '/charter/v1/metadata/protected-resource/wp-json/charter-test/v1/mcp' );
+		self::assertContains( self::MCP_SCOPE, $serverMetadata->get_data()['scopes_supported'] );
+		self::assertSame( $this->mcpResource(), $resourceMetadata->get_data()['resource'] );
+		self::assertSame( array( self::MCP_SCOPE, self::MCP_MANAGE_SCOPE ), $resourceMetadata->get_data()['scopes_supported'] );
+
+		$omittedScope = $parameters;
+		unset( $omittedScope['scope'] );
+		try {
+			$authorization->validate( $omittedScope );
+			self::fail( 'A specialized-only resource must not default to the general scope.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_scope', $exception->error() );
+		}
+		$generalScope          = $parameters;
+		$generalScope['scope'] = AuthorizationService::GENERAL_SCOPE;
+		try {
+			$authorization->validate( $generalScope );
+			self::fail( 'A specialized-only resource must reject the general scope.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_scope', $exception->error() );
+		}
+
+		$consent = $authorization->begin( $parameters, $this->userId );
+
+		self::assertSame( $this->mcpResource(), $consent['request']->resource() );
+		self::assertSame( self::MCP_SCOPE, $consent['request']->scope() );
+		self::assertTrue( $consent['request']->continuingAccessRequested() );
+		self::assertSame( 'Example MCP access', $consent['request']->consentScopes()[0]->name() );
+		self::assertSame( 'Use the Example MCP server as your WordPress account.', $consent['request']->consentScopes()[0]->description() );
+		$transactionRecord = $plugin->credentials()->find( CredentialStore::AUTHORIZATION_REQUEST, $this->issuer, $consent['transaction'] );
+		self::assertNotNull( $transactionRecord );
+		self::assertSame( $this->mcpResource(), $transactionRecord->resource() );
+		self::assertSame( self::MCP_SCOPE, $transactionRecord->scope() );
+
+		$code       = self::queryParameter(
+			$authorization->complete( $consent['transaction'], $this->userId, true ),
+			'code'
+		);
+		$codeRecord = $plugin->credentials()->find( CredentialStore::AUTHORIZATION_CODE, $this->issuer, $code );
+		self::assertNotNull( $codeRecord );
+		self::assertSame( $this->mcpResource(), $codeRecord->resource() );
+		self::assertSame( self::MCP_SCOPE, $codeRecord->scope() );
+		$wrongResource             = $this->mcpTokenParameters( $code );
+		$wrongResource['resource'] = $this->issuer;
+		try {
+			$plugin->tokens()->exchange( $wrongResource );
+			self::fail( 'An isolated-resource code must reject the default resource.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_target', $exception->error() );
+		}
+
+		$issued = $plugin->tokens()->exchange( $this->mcpTokenParameters( $code ) );
+		self::assertSame( self::MCP_SCOPE, $issued['scope'] );
+		self::assertSame( $this->mcpResource(), $issued['resource'] );
+		self::assertIsString( $issued['refresh_token'] ?? null );
+
+		$accessRecord  = $plugin->credentials()->find( CredentialStore::ACCESS_TOKEN, $this->issuer, $issued['access_token'] );
+		$refreshRecord = $plugin->credentials()->find( CredentialStore::REFRESH_TOKEN, $this->issuer, $issued['refresh_token'] );
+		self::assertNotNull( $accessRecord );
+		self::assertNotNull( $refreshRecord );
+		self::assertSame( $this->mcpResource(), $accessRecord->resource() );
+		self::assertSame( self::MCP_SCOPE, $accessRecord->scope() );
+		self::assertSame( $accessRecord->grantId(), $refreshRecord->grantId() );
+		self::assertSame( $accessRecord->resource(), $refreshRecord->resource() );
+		self::assertSame( $accessRecord->scope(), $refreshRecord->scope() );
+		$grantId = $accessRecord->grantId();
+		self::assertIsInt( $grantId );
+		$activeGrant = $plugin->credentials()->findGrant( $grantId );
+		self::assertNotNull( $activeGrant );
+		self::assertSame( $this->mcpResource(), $activeGrant->resource() );
+		self::assertSame( self::MCP_SCOPE, $activeGrant->scope() );
+
+		$mcp = $this->dispatchBearer( '/charter-test/v1/mcp', $issued['access_token'] );
+		self::assertSame( 200, $mcp->get_status() );
+		self::assertSame( $this->userId, $mcp->get_data()['user_id'] );
+		self::assertSame( $this->mcpResource(), $mcp->get_data()['resource'] );
+
+		$defaultResource = $this->dispatchBearer( '/charter-test/v1/protected', $issued['access_token'] );
+		self::assertSame( 401, $defaultResource->get_status() );
+
+		$manageRequest = new WP_REST_Request( 'POST', '/charter-test/v1/mcp' );
+		$manageRequest->set_header( 'Authorization', 'Bearer ' . $issued['access_token'] );
+		$insufficient = $this->server->dispatch( $manageRequest );
+		self::assertSame( 403, $insufficient->get_status() );
+		self::assertSame(
+			'Bearer error="insufficient_scope", scope="' . self::MCP_MANAGE_SCOPE . '", resource_metadata="' . ( new EndpointUrls( $this->issuer ) )->protectedResourceMetadata( $this->mcpResource() ) . '"',
+			$insufficient->get_headers()['WWW-Authenticate']
+		);
+
+		$permissionConsent = $authorization->begin( $this->mcpAuthorizationParameters( self::MCP_MANAGE_SCOPE . ' ' . self::MCP_SCOPE ), $this->userId );
+		self::assertSame( self::MCP_SCOPE . ' ' . self::MCP_MANAGE_SCOPE, $permissionConsent['request']->scope() );
+		$permissionCode    = self::queryParameter(
+			$authorization->complete( $permissionConsent['transaction'], $this->userId, true ),
+			'code'
+		);
+		$permissionToken   = $plugin->tokens()->exchange( $this->mcpTokenParameters( $permissionCode ) );
+		$permissionRequest = new WP_REST_Request( 'POST', '/charter-test/v1/mcp' );
+		$permissionRequest->set_header( 'Authorization', 'Bearer ' . $permissionToken['access_token'] );
+		$permissionDenied = $this->server->dispatch( $permissionRequest );
+		self::assertSame( 403, $permissionDenied->get_status() );
+		self::assertSame( 'rest_forbidden', $permissionDenied->get_data()['code'] );
+		self::assertArrayNotHasKey( 'WWW-Authenticate', $permissionDenied->get_headers() );
+
+		$reuse = $authorization->begin( $parameters, $this->userId );
+		self::assertSame( $accessRecord->grantId(), $reuse['reusable_grant_id'] );
+
+		$rotated = $plugin->tokens()->exchange(
+			array(
+				'grant_type'    => Client::GRANT_REFRESH_TOKEN,
+				'client_id'     => self::MCP_CLIENT_ID,
+				'refresh_token' => $issued['refresh_token'],
+				'resource'      => $this->mcpResource(),
+				'scope'         => self::MCP_SCOPE,
+			)
+		);
+		self::assertSame( $this->mcpResource(), $rotated['resource'] );
+		self::assertSame( self::MCP_SCOPE, $rotated['scope'] );
+		self::assertIsString( $rotated['refresh_token'] ?? null );
+		$rotatedAccessRecord  = $plugin->credentials()->find( CredentialStore::ACCESS_TOKEN, $this->issuer, $rotated['access_token'] );
+		$rotatedRefreshRecord = $plugin->credentials()->find( CredentialStore::REFRESH_TOKEN, $this->issuer, $rotated['refresh_token'] );
+		self::assertNotNull( $rotatedAccessRecord );
+		self::assertNotNull( $rotatedRefreshRecord );
+		self::assertSame( $this->mcpResource(), $rotatedAccessRecord->resource() );
+		self::assertSame( self::MCP_SCOPE, $rotatedAccessRecord->scope() );
+		self::assertSame( $this->mcpResource(), $rotatedRefreshRecord->resource() );
+		self::assertSame( self::MCP_SCOPE, $rotatedRefreshRecord->scope() );
+		self::assertSame( $refreshRecord->id(), $rotatedRefreshRecord->parentId() );
+
+		$this->mcpProviderAvailable = false;
+		$metadata                   = $this->dispatch( 'GET', '/charter/v1/metadata/protected-resource/wp-json/charter-test/v1/mcp' );
+		self::assertSame( 404, $metadata->get_status() );
+		$serverMetadata = $this->dispatch( 'GET', '/charter/v1/metadata/authorization-server' );
+		self::assertNotContains( self::MCP_SCOPE, $serverMetadata->get_data()['scopes_supported'] );
+		try {
+			$authorization->validate( $parameters );
+			self::fail( 'A missing specialized-resource provider must reject new authorization.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_target', $exception->error() );
+		}
+		self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/mcp', $rotated['access_token'] )->get_status() );
+		try {
+			$plugin->tokens()->exchange(
+				array(
+					'grant_type'    => Client::GRANT_REFRESH_TOKEN,
+					'client_id'     => self::MCP_CLIENT_ID,
+					'refresh_token' => $rotated['refresh_token'],
+				)
+			);
+			self::fail( 'A missing specialized-scope provider must reject refresh.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_grant', $exception->error() );
+		}
+
+		$plugin->tokens()->revoke(
+			array(
+				'client_id' => self::MCP_CLIENT_ID,
+				'token'     => $rotated['access_token'],
+			)
+		);
+		$grant = $plugin->credentials()->findGrant( $grantId );
+		self::assertNotNull( $grant );
+		self::assertSame( 'revoked', $grant->status() );
+	}
+
+	/**
+	 * Registers the simulated MCP server-wide resource and scopes.
+	 *
+	 * @param AccessPolicy $policy Exact issuer policy under construction.
+	 * @param string       $issuer Exact current issuer.
+	 */
+	public function registerMcpAccess( AccessPolicy $policy, string $issuer ): void {
+		if ( ! $this->mcpProviderAvailable ) {
+			return;
+		}
+
+		$resource = $issuer . '/wp-json/charter-test/v1/mcp';
+		self::assertTrue( $policy->registerResource( 'example-mcp', $resource ) );
+		self::assertTrue( $policy->registerScope( 'example-mcp', self::MCP_SCOPE, 'Example MCP access', 'Use the Example MCP server as your WordPress account.', array( $resource ) ) );
+		self::assertTrue( $policy->registerScope( 'example-mcp', self::MCP_MANAGE_SCOPE, 'Example MCP management', 'Use management operations exposed by the Example MCP server.', array( $resource ) ) );
+	}
+
+	/**
 	 * Registers public and exact-handler-protected test integrations.
 	 *
 	 * @since 0.1.0
@@ -917,14 +1134,33 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 
 		register_rest_route(
 			'charter-test/v1',
-			'/specialized',
-			ProtectedRoute::assign(
-				array(
-					'methods'             => 'GET',
-					'permission_callback' => '__return_true',
-					'callback'            => '__return_empty_array',
+			'/mcp',
+			array(
+				ProtectedRoute::assign(
+					array(
+						'methods'             => 'GET',
+						'permission_callback' => static fn (): bool => current_user_can( 'read' ),
+						'callback'            => static function (): array {
+							$context = Plugin::boot()->bearerAuthenticator()->currentContext();
+
+							return array(
+								'user_id'  => get_current_user_id(),
+								'resource' => null === $context ? null : $context->resource(),
+							);
+						},
+					),
+					array( self::MCP_SCOPE ),
+					$this->mcpResource()
 				),
-				array( 'example:special' )
+				ProtectedRoute::assign(
+					array(
+						'methods'             => 'POST',
+						'permission_callback' => static fn (): bool => current_user_can( 'manage_options' ),
+						'callback'            => '__return_empty_array',
+					),
+					array( self::MCP_MANAGE_SCOPE ),
+					$this->mcpResource()
+				),
 			)
 		);
 
@@ -1196,6 +1432,47 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 			'resource'              => $this->issuer,
 			'scope'                 => AuthorizationService::GENERAL_SCOPE,
 			'state'                 => 'client-state',
+		);
+	}
+
+	/** Returns the exact isolated MCP resource for the current issuer. */
+	private function mcpResource(): string {
+		return $this->issuer . '/wp-json/charter-test/v1/mcp';
+	}
+
+	/**
+	 * Returns one complete MCP-compatible authorization request.
+	 *
+	 * @param string $scope Requested scope parameter.
+	 * @return array<string, string> Request parameters.
+	 */
+	private function mcpAuthorizationParameters( string $scope ): array {
+		return array(
+			'response_type'         => 'code',
+			'client_id'             => self::MCP_CLIENT_ID,
+			'redirect_uri'          => self::MCP_REDIRECT_URI,
+			'code_challenge'        => TokenService::s256Challenge( self::VERIFIER ),
+			'code_challenge_method' => 'S256',
+			'resource'              => $this->mcpResource(),
+			'scope'                 => $scope,
+			'state'                 => 'mcp-client-state',
+		);
+	}
+
+	/**
+	 * Returns one exact MCP-compatible authorization-code exchange.
+	 *
+	 * @param string $code Exact authorization code.
+	 * @return array<string, string> Token parameters.
+	 */
+	private function mcpTokenParameters( string $code ): array {
+		return array(
+			'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+			'client_id'     => self::MCP_CLIENT_ID,
+			'code'          => $code,
+			'code_verifier' => self::VERIFIER,
+			'redirect_uri'  => self::MCP_REDIRECT_URI,
+			'resource'      => $this->mcpResource(),
 		);
 	}
 

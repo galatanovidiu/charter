@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter\Admin;
 
 use GalatanOvidiu\Charter\Http\MetadataController;
+use GalatanOvidiu\Charter\OAuth\AccessPolicyProvider;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
@@ -105,7 +106,7 @@ final class NetworkSiteControl {
 					return false;
 				}
 
-				( new MetadataController( $this->siteState ) )->registerRewriteRules();
+				( new MetadataController( $this->siteState, new AccessPolicyProvider() ) )->registerRewriteRules();
 				flush_rewrite_rules( false );
 				$this->audit->record( $identity->issuer(), 'site_prepared', 'success', 'network_administrator_preparation', $actorUserId, null, null, null, $timestamp );
 

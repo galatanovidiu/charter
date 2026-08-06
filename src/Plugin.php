@@ -21,6 +21,7 @@ use GalatanOvidiu\Charter\Http\RegistrationController;
 use GalatanOvidiu\Charter\Http\RevocationController;
 use GalatanOvidiu\Charter\Http\TokenController;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
+use GalatanOvidiu\Charter\OAuth\AccessPolicyProvider;
 use GalatanOvidiu\Charter\OAuth\ClientCleanup;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataResolver;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataSnapshotStore;
@@ -154,6 +155,13 @@ final class Plugin {
 	private readonly ClientMetadataSnapshotStore $clientMetadataSnapshots;
 
 	/**
+	 * Request-local integration access registrations.
+	 *
+	 * @var AccessPolicyProvider
+	 */
+	private readonly AccessPolicyProvider $accessPolicy;
+
+	/**
 	 * Prevents direct construction.
 	 *
 	 * @since 0.1.0
@@ -163,15 +171,16 @@ final class Plugin {
 		$this->clients                 = new ClientRegistry();
 		$this->credentials             = new CredentialStore( new CredentialHasher() );
 		$this->clientMetadataSnapshots = new ClientMetadataSnapshotStore();
+		$this->accessPolicy            = new AccessPolicyProvider();
 		$this->audit                   = new AuditLog();
 		$this->rateLimiter             = new RateLimiter();
 		$this->clientGovernance        = new ClientGovernance( $this->clients, $this->credentials, $this->audit, $this->clientMetadataSnapshots );
 		$this->grantGovernance         = new GrantGovernance( $this->credentials, $this->audit );
 		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
 		$clientMetadata                = new ClientMetadataResolver( $this->clients, $this->clientMetadataSnapshots, new BoundedHostResolver(), new BoundedDirectJsonFetcher() );
-		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit );
-		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials );
-		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens );
+		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit, $this->accessPolicy );
+		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy );
+		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens, $this->accessPolicy );
 
 		if ( function_exists( 'add_action' ) ) {
 			$this->registerHooks();
@@ -210,7 +219,7 @@ final class Plugin {
 		$plugin = self::boot();
 		Schema::install();
 		$plugin->siteState->prepareCurrentSite();
-		( new MetadataController( $plugin->siteState ) )->registerRewriteRules();
+		( new MetadataController( $plugin->siteState, $plugin->accessPolicy ) )->registerRewriteRules();
 		flush_rewrite_rules();
 	}
 
@@ -253,6 +262,11 @@ final class Plugin {
 	/** Returns reusable CIMD projections for bounded cleanup and tests. */
 	public function clientMetadataSnapshots(): ClientMetadataSnapshotStore {
 		return $this->clientMetadataSnapshots;
+	}
+
+	/** Returns request-local exact resource and scope registrations. */
+	public function accessPolicy(): AccessPolicyProvider {
+		return $this->accessPolicy;
 	}
 
 	/**
@@ -333,7 +347,7 @@ final class Plugin {
 	 * @since 0.1.0
 	 */
 	private function registerHooks(): void {
-		$metadata      = new MetadataController( $this->siteState );
+		$metadata      = new MetadataController( $this->siteState, $this->accessPolicy );
 		$tokens        = new TokenController( $this->tokens );
 		$revocation    = new RevocationController( $this->tokens );
 		$registration  = new RegistrationController( $this->dynamicRegistration );
