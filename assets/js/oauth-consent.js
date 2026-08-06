@@ -16,16 +16,30 @@
 			return;
 		}
 
+		const submitter = event.submitter;
+		if (
+			!submitter ||
+			submitter.name !== 'decision' ||
+			!['approve', 'deny'].includes(submitter.value)
+		) {
+			event.preventDefault();
+			return;
+		}
+
+		const decision = document.createElement('input');
+		decision.type = 'hidden';
+		decision.name = submitter.name;
+		decision.value = submitter.value;
+		form.appendChild(decision);
+
 		submitted = true;
 		form.setAttribute('aria-busy', 'true');
 		if (status) {
 			status.hidden = false;
 		}
 
-		window.setTimeout(function () {
-			buttons.forEach(function (button) {
-				button.disabled = true;
-			});
-		}, 0);
+		buttons.forEach(function (button) {
+			button.disabled = true;
+		});
 	});
 })();

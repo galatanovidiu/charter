@@ -188,11 +188,15 @@ final class AuthorizationController {
 	 * @return string WordPress-generated script markup.
 	 */
 	private static function consentScriptHtml(): string {
+		$scriptPath = CHARTER_PATH . 'assets/js/oauth-consent.js';
+		$digest     = hash_file( 'sha256', $scriptPath );
+		$version    = CHARTER_VERSION . ( is_string( $digest ) ? '.' . substr( $digest, 0, 12 ) : '' );
+
 		wp_enqueue_script(
 			'charter-oauth-consent',
 			plugins_url( 'assets/js/oauth-consent.js', CHARTER_FILE ),
 			array(),
-			CHARTER_VERSION,
+			$version,
 			array(
 				'in_footer' => false,
 				'strategy'  => 'defer',

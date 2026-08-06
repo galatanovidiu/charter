@@ -9,14 +9,20 @@ const script = readFileSync(
 );
 
 function consentPage() {
-	const scheduled = [];
 	const status = { hidden: true };
-	const buttons = [{ disabled: false }, { disabled: false }];
+	const buttons = [
+		{ disabled: false, name: 'decision', value: 'approve' },
+		{ disabled: false, name: 'decision', value: 'deny' },
+	];
+	const appended = [];
 	const listeners = new Map();
 	const attributes = new Map();
 	const form = {
 		addEventListener(type, listener) {
 			listeners.set(type, listener);
+		},
+		appendChild(element) {
+			appended.push(element);
 		},
 		querySelector(selector) {
 			return selector === '[data-charter-oauth-status]' ? status : null;
@@ -31,20 +37,19 @@ function consentPage() {
 
 	vm.runInNewContext(script, {
 		document: {
+			createElement() {
+				return {};
+			},
 			querySelector(selector) {
 				return selector === '[data-charter-oauth-consent]'
 					? form
 					: null;
 			},
 		},
-		window: {
-			setTimeout(callback) {
-				scheduled.push(callback);
-			},
-		},
+		window: {},
 	});
 
-	return { attributes, buttons, listeners, scheduled, status };
+	return { appended, attributes, buttons, listeners, status };
 }
 
 test('locks consent after the first submission without dropping its decision', () => {
@@ -54,6 +59,7 @@ test('locks consent after the first submission without dropping its decision', (
 	let secondPrevented = false;
 
 	submit({
+		submitter: page.buttons[0],
 		preventDefault() {
 			firstPrevented = true;
 		},
@@ -62,17 +68,21 @@ test('locks consent after the first submission without dropping its decision', (
 	assert.equal(firstPrevented, false);
 	assert.equal(page.attributes.get('aria-busy'), 'true');
 	assert.equal(page.status.hidden, false);
-	assert.deepEqual(page.buttons, [{ disabled: false }, { disabled: false }]);
+	assert.deepEqual(page.appended, [
+		{ type: 'hidden', name: 'decision', value: 'approve' },
+	]);
+	assert.deepEqual(page.buttons, [
+		{ disabled: true, name: 'decision', value: 'approve' },
+		{ disabled: true, name: 'decision', value: 'deny' },
+	]);
 
 	submit({
+		submitter: page.buttons[0],
 		preventDefault() {
 			secondPrevented = true;
 		},
 	});
 
 	assert.equal(secondPrevented, true);
-	assert.equal(page.scheduled.length, 1);
-
-	page.scheduled[0]();
-	assert.deepEqual(page.buttons, [{ disabled: true }, { disabled: true }]);
+	assert.equal(page.appended.length, 1);
 });
