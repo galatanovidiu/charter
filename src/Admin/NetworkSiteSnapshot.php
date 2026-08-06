@@ -17,19 +17,23 @@ use GalatanOvidiu\Charter\Site\SiteIdentity;
  * Carries bounded, non-secret state from one selected site boundary.
  *
  * @since 0.1.0
+ *
+ * @phpstan-type ContainmentSnapshot array{mode:string,changed_at:?int,actor:string,actor_user_id:?int,audit_pending:bool}
  */
 final class NetworkSiteSnapshot {
 
 	/**
 	 * Creates one selected-site projection.
 	 *
-	 * @param int                $siteId WordPress site identifier.
-	 * @param string             $state Site OAuth lifecycle state.
-	 * @param SiteIdentity|null  $identity Exact prepared identity.
-	 * @param bool               $storageReady Whether site tables are installed.
-	 * @param int                $activeGrantCount Complete active-grant count.
-	 * @param array<GrantRecord> $activeGrants Bounded active-grant page.
-	 * @param array<AuditEvent>  $events Bounded site event history.
+	 * @param int                  $siteId WordPress site identifier.
+	 * @param string               $state Site OAuth lifecycle state.
+	 * @param SiteIdentity|null    $identity Exact prepared identity.
+	 * @param bool                 $storageReady Whether site tables are installed.
+	 * @param int                  $activeGrantCount Complete active-grant count.
+	 * @param array<GrantRecord>   $activeGrants Bounded active-grant page.
+	 * @param array<AuditEvent>    $events Bounded site event history.
+	 * @param array<string, mixed> $containment Secret-free containment status.
+	 * @phpstan-param ContainmentSnapshot $containment
 	 */
 	public function __construct(
 		private readonly int $siteId,
@@ -38,7 +42,8 @@ final class NetworkSiteSnapshot {
 		private readonly bool $storageReady,
 		private readonly int $activeGrantCount,
 		private readonly array $activeGrants,
-		private readonly array $events
+		private readonly array $events,
+		private readonly array $containment
 	) {
 	}
 
@@ -83,5 +88,25 @@ final class NetworkSiteSnapshot {
 	 */
 	public function events(): array {
 		return $this->events;
+	}
+
+	/** Returns the issuer's current reversible containment mode. */
+	public function containmentMode(): string {
+		return $this->containment['mode'];
+	}
+
+	/** Returns the last containment transition time, when one exists. */
+	public function containmentChangedAt(): ?int {
+		return $this->containment['changed_at'];
+	}
+
+	/** Returns the stable last transition actor channel. */
+	public function containmentActor(): string {
+		return $this->containment['actor'];
+	}
+
+	/** Reports whether the applied mode still needs audit reconciliation. */
+	public function containmentAuditPending(): bool {
+		return $this->containment['audit_pending'];
 	}
 }

@@ -78,6 +78,29 @@ form_field() {
 	' "${file}" "${action}" "${field}"
 }
 
+containment_form_field() {
+	local file=$1
+	local scope=$2
+	local mode=$3
+	local field=$4
+
+	php -r '
+		$document = new DOMDocument();
+		@$document->loadHTMLFile( $argv[1] );
+		foreach ( $document->getElementsByTagName( "form" ) as $form ) {
+			$values = array();
+			foreach ( $form->getElementsByTagName( "input" ) as $input ) {
+				$values[ $input->getAttribute( "name" ) ] = $input->getAttribute( "value" );
+			}
+			if ( ( $values["scope"] ?? null ) === $argv[2] && ( $values["mode"] ?? null ) === $argv[3] ) {
+				echo $values[ $argv[4] ] ?? "";
+				exit;
+			}
+		}
+		exit( 1 );
+	' "${file}" "${scope}" "${mode}" "${field}"
+}
+
 fixture() {
 	local action=$1
 	local output
@@ -211,6 +234,67 @@ fi
 
 charter_network_status="$(load_page)"
 assert_status 200 "${charter_network_status}" 'selected-site grant inspection'
+if ! grep -q 'Containment mode: resumed' "${charter_network_tmp}/network-page.html"; then
+	echo 'The Network Admin page did not render resumed containment status.' >&2
+	exit 1
+fi
+
+charter_network_containment_action='charter_oauth_network_set_containment'
+charter_network_nonce="$(containment_form_field "${charter_network_tmp}/network-page.html" site issuance_paused _wpnonce)"
+charter_network_status="$(post_action "${charter_network_containment_action}" "${charter_network_nonce}" --data-urlencode "issuer=${charter_network_issuer}" --data 'scope=site' --data 'mode=issuance_paused' --data 'confirm_action=1')"
+assert_status 302 "${charter_network_status}" 'selected-site issuance pause'
+charter_network_state="$(fixture status)"
+if [[ "$(json_field "${charter_network_state}" containment_mode)" != 'issuance_paused' ]] || [[ "$(json_field "${charter_network_state}" active_grants)" != '2' ]]; then
+	echo 'Selected-site issuance pause changed grants or did not persist its mode.' >&2
+	exit 1
+fi
+
+charter_network_status="$(load_page)"
+assert_status 200 "${charter_network_status}" 'paused selected-site inspection'
+charter_network_nonce="$(containment_form_field "${charter_network_tmp}/network-page.html" site lockdown _wpnonce)"
+charter_network_status="$(post_action "${charter_network_containment_action}" "${charter_network_nonce}" --data-urlencode "issuer=${charter_network_issuer}" --data 'scope=site' --data 'mode=lockdown' --data 'confirm_action=1')"
+assert_status 302 "${charter_network_status}" 'selected-site lockdown'
+charter_network_state="$(fixture status)"
+if [[ "$(json_field "${charter_network_state}" containment_mode)" != 'lockdown' ]] || [[ "$(json_field "${charter_network_state}" active_grants)" != '2' ]]; then
+	echo 'Selected-site lockdown changed grants or did not persist its mode.' >&2
+	exit 1
+fi
+
+charter_network_status="$(load_page)"
+assert_status 200 "${charter_network_status}" 'locked-down selected-site inspection'
+charter_network_nonce="$(containment_form_field "${charter_network_tmp}/network-page.html" site resumed _wpnonce)"
+charter_network_status="$(post_action "${charter_network_containment_action}" "${charter_network_nonce}" --data-urlencode "issuer=${charter_network_issuer}" --data 'scope=site' --data 'mode=resumed' --data 'confirm_action=1')"
+assert_status 302 "${charter_network_status}" 'selected-site OAuth resume'
+charter_network_state="$(fixture status)"
+if [[ "$(json_field "${charter_network_state}" containment_mode)" != 'resumed' ]] || [[ "$(json_field "${charter_network_state}" active_grants)" != '2' ]] || ! grep -q 'network_administrator_issuance_paused' <<<"${charter_network_state}" || ! grep -q 'network_administrator_lockdown' <<<"${charter_network_state}" || ! grep -q 'network_administrator_resumed' <<<"${charter_network_state}"; then
+	echo 'Network Admin containment did not preserve state, resume, and record secret-free audit.' >&2
+	exit 1
+fi
+
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp charter oauth containment --network --sites="${charter_network_site_id}" --status > "${charter_network_tmp}/cli-status.txt"
+if ! grep -q "Site ${charter_network_site_id}: state=enabled; mode=resumed" "${charter_network_tmp}/cli-status.txt"; then
+	echo 'Network-aware WP-CLI did not report the selected issuer containment status.' >&2
+	exit 1
+fi
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp charter oauth containment --network --sites="${charter_network_site_id}" --mode=pause --confirm > "${charter_network_tmp}/cli-pause.txt"
+if [[ "$(json_field "$(fixture status)" containment_mode)" != 'issuance_paused' ]]; then
+	echo 'Selected-network-site WP-CLI pause did not change only the enabled issuer.' >&2
+	exit 1
+fi
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp charter oauth containment --network --all --mode=lockdown --confirm > "${charter_network_tmp}/cli-lockdown.txt"
+if [[ "$(json_field "$(fixture status)" containment_mode)" != 'lockdown' ]] || ! grep -q 'Site 1: skipped; issuer is not enabled.' "${charter_network_tmp}/cli-lockdown.txt"; then
+	echo 'All-site WP-CLI lockdown did not sequentially skip Available sites and change the enabled issuer.' >&2
+	exit 1
+fi
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp charter oauth containment --site="${charter_network_site_id}" --mode=resume --confirm > "${charter_network_tmp}/cli-resume.txt"
+charter_network_state="$(fixture status)"
+if [[ "$(json_field "${charter_network_state}" containment_mode)" != 'resumed' ]] || [[ "$(json_field "${charter_network_state}" active_grants)" != '2' ]] || ! grep -q 'wp_cli_issuance_paused' <<<"${charter_network_state}" || ! grep -q 'wp_cli_lockdown' <<<"${charter_network_state}" || ! grep -q 'wp_cli_resumed' <<<"${charter_network_state}"; then
+	echo 'WP-CLI containment did not preserve grants, resume, and record issuer-local audit.' >&2
+	exit 1
+fi
+
+charter_network_status="$(load_page)"
+assert_status 200 "${charter_network_status}" 'resumed selected-site inspection'
 charter_network_revoke_action='charter_oauth_network_revoke_site_grant'
 charter_network_grant_id="$(form_field "${charter_network_tmp}/network-page.html" "${charter_network_revoke_action}" grant_id)"
 charter_network_nonce="$(form_field "${charter_network_tmp}/network-page.html" "${charter_network_revoke_action}" _wpnonce)"

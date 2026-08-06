@@ -14,12 +14,15 @@ use GalatanOvidiu\Charter\OAuth\AccessPolicy;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
 use GalatanOvidiu\Charter\OAuth\Client;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
+use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
+use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
 use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\TransactionManager;
 use GalatanOvidiu\Charter\Plugin;
 use GalatanOvidiu\Charter\Rest\ProtectedRoute;
 use GalatanOvidiu\Charter\Schema;
+use GalatanOvidiu\Charter\Security\AuditWriter;
 use WP_Application_Passwords;
 use WP_REST_Request;
 use WP_REST_Server;
@@ -101,6 +104,8 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
 		$plugin->rateLimiter()->deleteAll();
+		$plugin->containment()->delete();
+		self::assertTrue( DynamicRegistrationService::setEnabled( true ) );
 		$plugin->siteState()->delete();
 		self::assertTrue( $plugin->siteState()->prepareCurrentSite() );
 
@@ -151,6 +156,8 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
 		$plugin->rateLimiter()->deleteAll();
+		$plugin->containment()->delete();
+		DynamicRegistrationService::setEnabled( true );
 		$plugin->siteState()->delete();
 		wp_set_current_user( 0 );
 		unset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] );
@@ -781,6 +788,309 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertNull( $revoked->get_data() );
 		self::assertSame( 'no-store', $revoked->get_headers()['Cache-Control'] );
 		self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', $accessToken )->get_status() );
+	}
+
+	/**
+	 * Verifies reversible pause and lockdown without implicit OAuth data loss.
+	 */
+	public function testEmergencyContainmentPreservesStateAndProtocolOwnershipUntilExplicitRevocation(): void {
+		$this->enableIssuer();
+		$plugin          = Plugin::boot();
+		$administrator   = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		$refreshClient   = 'charter-containment-refresh-client';
+		$refreshRedirect = 'https://containment.example.test/callback';
+		self::assertTrue( $plugin->clients()->registerPublicClient( $this->issuer, $refreshClient, 'Containment refresh client', array( $refreshRedirect ), true ) );
+
+		$refreshParameters = array(
+			'response_type'         => 'code',
+			'client_id'             => $refreshClient,
+			'redirect_uri'          => $refreshRedirect,
+			'code_challenge'        => TokenService::s256Challenge( self::VERIFIER ),
+			'code_challenge_method' => 'S256',
+			'resource'              => $this->issuer,
+			'scope'                 => AuthorizationService::GENERAL_SCOPE . ' ' . AuthorizationService::OFFLINE_ACCESS_SCOPE,
+			'state'                 => 'containment-refresh-state',
+		);
+		$refreshConsent    = $plugin->authorization()->begin( $refreshParameters, $this->userId );
+		$refreshCode       = self::queryParameter( $plugin->authorization()->complete( $refreshConsent['transaction'], $this->userId, true ), 'code' );
+		$refreshIssued     = $this->dispatchToken(
+			array(
+				'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+				'client_id'     => $refreshClient,
+				'code'          => $refreshCode,
+				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => $refreshRedirect,
+				'resource'      => $this->issuer,
+			)
+		);
+		self::assertSame( 200, $refreshIssued->get_status() );
+		$refreshData = $refreshIssued->get_data();
+		self::assertIsString( $refreshData['access_token'] ?? null );
+		self::assertIsString( $refreshData['refresh_token'] ?? null );
+
+		$revocableAccess = $this->issueAccessToken();
+		$pendingCode     = $this->authorizeCode();
+		$pendingConsent  = $plugin->authorization()->begin( $this->authorizationParameters(), $this->userId );
+		$before          = $this->oauthStateCounts();
+		$containmentAt   = time() - 10;
+		self::assertSame( 'good', $plugin->containment()->siteHealthResult()['status'] );
+
+		self::assertTrue(
+			$plugin->containment()->transition(
+				EmergencyContainment::ISSUANCE_PAUSED,
+				EmergencyContainment::ACTOR_SITE_ADMIN,
+				$administrator,
+				$containmentAt,
+				$this->issuer
+			)
+		);
+		self::assertSame( EmergencyContainment::ISSUANCE_PAUSED, $plugin->containment()->mode() );
+		self::assertSame( 'recommended', $plugin->containment()->siteHealthResult()['status'] );
+		$metadata = $this->dispatch( 'GET', '/charter/v1/metadata/authorization-server' );
+		self::assertSame( 200, $metadata->get_status() );
+		self::assertArrayNotHasKey( 'registration_endpoint', $metadata->get_data() );
+
+		$dcrRequest = new WP_REST_Request( 'POST', '/charter/v1/register' );
+		$dcrRequest->set_header( 'Content-Type', 'application/json' );
+		$dcrRequest->set_body(
+			(string) wp_json_encode(
+				array(
+					'client_name'                => 'Paused registration',
+					'redirect_uris'              => array( 'https://paused.example.test/callback' ),
+					'token_endpoint_auth_method' => 'none',
+					'grant_types'                => array( Client::GRANT_AUTHORIZATION_CODE ),
+					'response_types'             => array( 'code' ),
+				)
+			)
+		);
+		$dcrPaused = $this->server->dispatch( $dcrRequest );
+		self::assertSame( 503, $dcrPaused->get_status() );
+		self::assertSame( 'temporarily_unavailable', $dcrPaused->get_data()['error'] );
+
+		try {
+			$plugin->authorization()->begin( $this->authorizationParameters(), $this->userId );
+			self::fail( 'Pause must reject a new authorization before it creates a transaction.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'temporarily_unavailable', $exception->error() );
+			self::assertNull( $exception->redirectUri(), 'An unvalidated authorization request must not gain redirect authority.' );
+		}
+		try {
+			$plugin->authorization()->complete( $pendingConsent['transaction'], $this->userId, true );
+			self::fail( 'Pause must not issue a code from an existing consent transaction.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'temporarily_unavailable', $exception->error() );
+			self::assertSame( self::REDIRECT_URI, $exception->redirectUri(), 'Only the stored validated authorization request owns the client redirect.' );
+			self::assertSame( 'client-state', $exception->state() );
+		}
+
+		$codePaused = $this->exchangeCode( $pendingCode );
+		self::assertSame( 503, $codePaused->get_status() );
+		self::assertSame( 'temporarily_unavailable', $codePaused->get_data()['error'] );
+		$refreshPaused = $this->dispatchToken(
+			array(
+				'grant_type'    => Client::GRANT_REFRESH_TOKEN,
+				'client_id'     => $refreshClient,
+				'refresh_token' => $refreshData['refresh_token'],
+			)
+		);
+		self::assertSame( 503, $refreshPaused->get_status() );
+		self::assertSame( 'temporarily_unavailable', $refreshPaused->get_data()['error'] );
+		self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/protected', $refreshData['access_token'] )->get_status() );
+		self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/public', $refreshData['access_token'] )->get_status() );
+		self::assertSame( $before, $this->oauthStateCounts(), 'Pause must not mutate clients, grants, consents, or credentials.' );
+
+		self::assertTrue(
+			$plugin->containment()->transition(
+				EmergencyContainment::LOCKDOWN,
+				EmergencyContainment::ACTOR_SITE_ADMIN,
+				$administrator,
+				$containmentAt + 1,
+				$this->issuer
+			)
+		);
+		self::assertSame( 'critical', $plugin->containment()->siteHealthResult()['status'] );
+		$lockedBearer = $this->dispatchBearer( '/charter-test/v1/protected', $refreshData['access_token'] );
+		self::assertSame( 401, $lockedBearer->get_status() );
+		self::assertSame( 'invalid_token', $lockedBearer->get_data()['error'] );
+		self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/public', $refreshData['access_token'] )->get_status() );
+		self::assertSame( $before, $this->oauthStateCounts(), 'Lockdown must not mutate clients, grants, consents, or credentials.' );
+		$cleanupDuringLockdown = $plugin->cleanup()->execute( time() );
+		self::assertIsArray( $cleanupDuringLockdown->deleted(), 'Issuer-local cleanup remains available during lockdown.' );
+		self::assertSame( EmergencyContainment::LOCKDOWN, $plugin->containment()->mode(), 'Cleanup cannot change the explicit containment mode.' );
+
+		wp_set_current_user( $this->userId );
+		self::assertSame( 200, $this->dispatch( 'GET', '/charter-test/v1/protected' )->get_status(), 'Cookie authentication remains available during lockdown.' );
+		$applicationPassword = WP_Application_Passwords::create_new_application_password( $this->userId, array( 'name' => 'Containment boundary' ) );
+		self::assertIsArray( $applicationPassword );
+		$user = get_userdata( $this->userId );
+		self::assertNotFalse( $user );
+		add_filter( 'wp_is_application_passwords_available', '__return_true' );
+		add_filter( 'application_password_is_api_request', '__return_true' );
+		try {
+			wp_set_current_user( 0 );
+			$_SERVER['PHP_AUTH_USER'] = $user->user_login;
+			$_SERVER['PHP_AUTH_PW']   = $applicationPassword[0];
+			$applicationUserId        = wp_validate_application_password( false );
+			self::assertSame( $this->userId, $applicationUserId );
+			wp_set_current_user( $applicationUserId );
+			self::assertSame( 200, $this->dispatch( 'GET', '/charter-test/v1/protected' )->get_status(), 'Application Password authentication remains available during lockdown.' );
+		} finally {
+			remove_filter( 'wp_is_application_passwords_available', '__return_true' );
+			remove_filter( 'application_password_is_api_request', '__return_true' );
+			unset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] );
+			$GLOBALS['wp_rest_application_password_status'] = null; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Resets Core authentication test state.
+			WP_Application_Passwords::delete_all_application_passwords( $this->userId );
+			wp_set_current_user( 0 );
+		}
+
+		$revokedDuringLockdown = $this->dispatchRevocation(
+			array(
+				'client_id' => self::CLIENT_ID,
+				'token'     => $revocableAccess,
+			)
+		);
+		self::assertSame( 200, $revokedDuringLockdown->get_status(), 'RFC 7009 remains available during lockdown.' );
+
+		self::assertTrue(
+			$plugin->containment()->transition(
+				EmergencyContainment::RESUMED,
+				EmergencyContainment::ACTOR_SITE_ADMIN,
+				$administrator,
+				$containmentAt + 2,
+				$this->issuer
+			)
+		);
+		self::assertSame( 'good', $plugin->containment()->siteHealthResult()['status'] );
+		$resumedMetadata = $this->dispatch( 'GET', '/charter/v1/metadata/authorization-server' );
+		self::assertArrayHasKey( 'registration_endpoint', $resumedMetadata->get_data() );
+		self::assertSame( 200, $this->exchangeCode( $pendingCode )->get_status(), 'The unconsumed code remains exchangeable after resume.' );
+		$resumedConsent = $plugin->authorization()->complete( $pendingConsent['transaction'], $this->userId, true );
+		self::assertNotSame( '', self::queryParameter( $resumedConsent, 'code' ), 'The unconsumed consent transaction remains usable after resume.' );
+		$resumedRefresh = $this->dispatchToken(
+			array(
+				'grant_type'    => Client::GRANT_REFRESH_TOKEN,
+				'client_id'     => $refreshClient,
+				'refresh_token' => $refreshData['refresh_token'],
+			)
+		);
+		self::assertSame( 200, $resumedRefresh->get_status(), 'The unconsumed refresh token remains usable after resume.' );
+		self::assertSame( 201, $this->server->dispatch( $dcrRequest )->get_status(), 'DCR resumes without changing its independent operator policy.' );
+
+		$events = $plugin->audit()->listForIssuer( $this->issuer, 20 );
+		$modes  = array_values( array_filter( $events, static fn ( $event ): bool => 'emergency_mode_changed' === $event->eventType() ) );
+		self::assertCount( 3, $modes );
+		self::assertSame( 'site_administrator_resumed', $modes[0]->reason() );
+		self::assertSame( 'site_administrator_lockdown', $modes[1]->reason() );
+		self::assertSame( 'site_administrator_issuance_paused', $modes[2]->reason() );
+		$auditJson = wp_json_encode( $events );
+		self::assertIsString( $auditJson );
+		self::assertStringNotContainsString( $refreshData['access_token'], $auditJson );
+		self::assertStringNotContainsString( $refreshData['refresh_token'], $auditJson );
+
+		$permanentlyRevoked = $plugin->grantGovernance()->revokeAll( $this->issuer, $administrator, $containmentAt + 3 );
+		self::assertNotSame( array(), $permanentlyRevoked, 'Permanent revoke-all remains a distinct explicit action.' );
+		self::assertSame( 0, $plugin->credentials()->countActiveGrantsForIssuer( $this->issuer ) );
+		self::assertSame( EmergencyContainment::RESUMED, $plugin->containment()->mode(), 'Permanent revocation does not silently change the reversible containment mode.' );
+	}
+
+	/** Verifies an applied mode retains truthful pending status until audit recovers. */
+	public function testEmergencyContainmentReconcilesAnInterruptedAuditExactlyOnce(): void {
+		$this->enableIssuer();
+		$plugin      = Plugin::boot();
+		$audit       = new class() implements AuditWriter {
+			/**
+			 * Whether the next audit write should fail.
+			 *
+			 * @var bool
+			 */
+			public bool $fail = true;
+
+			/**
+			 * Recorded exact test events.
+			 *
+			 * @var array<int, array{issuer:string,timestamp:int,event_type:string,outcome:string,reason:string,actor_user_id:?int}>
+			 */
+			public array $events = array();
+
+			/**
+			 * Records one exact event unless failure is enabled.
+			 *
+			 * @param string      $issuer Exact issuer.
+			 * @param string      $eventType Stable event type.
+			 * @param string      $outcome Stable outcome.
+			 * @param string      $reason Stable reason.
+			 * @param int|null    $actorUserId Acting WordPress user.
+			 * @param int|null    $representedUserId Represented user.
+			 * @param string|null $clientId Exact client identifier.
+			 * @param string|null $sourceAddress Normalized source when relevant.
+			 * @param int|null    $timestamp Event timestamp.
+			 * @param string|null $resourceIdentifier Exact resource when applicable.
+			 * @param string|null $scopes Canonical scope set when applicable.
+			 * @throws \RuntimeException While failure is enabled.
+			 */
+			public function record( string $issuer, string $eventType, string $outcome, string $reason, ?int $actorUserId = null, ?int $representedUserId = null, ?string $clientId = null, ?string $sourceAddress = null, ?int $timestamp = null, ?string $resourceIdentifier = null, ?string $scopes = null ): void {
+				unset( $representedUserId, $clientId, $sourceAddress, $resourceIdentifier, $scopes );
+				if ( $this->fail || null === $timestamp ) {
+					throw new \RuntimeException( 'charter_test_audit_interrupted' );
+				}
+				$this->events[] = array(
+					'issuer'        => $issuer,
+					'timestamp'     => $timestamp,
+					'event_type'    => $eventType,
+					'outcome'       => $outcome,
+					'reason'        => $reason,
+					'actor_user_id' => $actorUserId,
+				);
+			}
+
+			/**
+			 * Reports whether one exact event was already recorded.
+			 *
+			 * @param string   $issuer Exact issuer.
+			 * @param int      $timestamp Exact event timestamp.
+			 * @param string   $eventType Stable event type.
+			 * @param string   $outcome Stable outcome.
+			 * @param string   $reason Stable reason.
+			 * @param int|null $actorUserId Acting WordPress user.
+			 */
+			public function hasEvent( string $issuer, int $timestamp, string $eventType, string $outcome, string $reason, ?int $actorUserId ): bool {
+				foreach ( $this->events as $event ) {
+					if ( array( $issuer, $timestamp, $eventType, $outcome, $reason, $actorUserId ) === array( $event['issuer'], $event['timestamp'], $event['event_type'], $event['outcome'], $event['reason'], $event['actor_user_id'] ) ) {
+						return true;
+					}
+				}
+
+				return false;
+			}
+		};
+		$containment = new EmergencyContainment( $plugin->siteState(), $audit );
+		$actorId     = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		$timestamp   = time();
+		$before      = $this->oauthStateCounts();
+
+		self::assertTrue( $containment->transition( EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::ACTOR_SITE_ADMIN, $actorId, $timestamp, $this->issuer ) );
+		self::assertSame( EmergencyContainment::ISSUANCE_PAUSED, $containment->mode(), 'Containment remains immediately effective when audit is interrupted.' );
+		self::assertTrue( $containment->snapshot()['audit_pending'] );
+		self::assertSame( 'critical', $containment->siteHealthResult()['status'] );
+		self::assertSame( $before, $this->oauthStateCounts() );
+		self::assertSame( array(), $audit->events );
+
+		$audit->fail = false;
+		self::assertTrue( $containment->transition( EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::ACTOR_SITE_ADMIN, $actorId, $timestamp + 1, $this->issuer ) );
+		self::assertFalse( $containment->snapshot()['audit_pending'] );
+		self::assertSame( 'recommended', $containment->siteHealthResult()['status'] );
+		self::assertCount( 1, $audit->events );
+		self::assertSame( $timestamp, $audit->events[0]['timestamp'], 'Audit retry retains the original applied transition time.' );
+		self::assertSame( 'site_administrator_issuance_paused', $audit->events[0]['reason'] );
+		self::assertSame( $actorId, $audit->events[0]['actor_user_id'] );
+		self::assertTrue( $containment->transition( EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::ACTOR_SITE_ADMIN, $actorId, $timestamp + 2, $this->issuer ) );
+		self::assertCount( 1, $audit->events, 'An already reconciled idempotent transition does not duplicate audit.' );
+
+		self::assertTrue( $containment->transition( EmergencyContainment::RESUMED, EmergencyContainment::ACTOR_SITE_ADMIN, $actorId, $timestamp, $this->issuer ) );
+		self::assertTrue( $containment->transition( EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::ACTOR_SITE_ADMIN, $actorId, $timestamp, $this->issuer ) );
+		self::assertCount( 3, $audit->events, 'Rapid same-actor transitions each retain a distinct audit identity.' );
+		self::assertSame( array( $timestamp, $timestamp + 1, $timestamp + 2 ), array_column( $audit->events, 'timestamp' ) );
+		self::assertSame( array( 'site_administrator_issuance_paused', 'site_administrator_resumed', 'site_administrator_issuance_paused' ), array_column( $audit->events, 'reason' ) );
 	}
 
 	/**
@@ -1473,6 +1783,21 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 			'code_verifier' => self::VERIFIER,
 			'redirect_uri'  => self::MCP_REDIRECT_URI,
 			'resource'      => $this->mcpResource(),
+		);
+	}
+
+	/**
+	 * Counts only persisted registrations, grants, and credential/consent rows.
+	 *
+	 * @return array{clients:int,grants:int,credentials:int}
+	 */
+	private function oauthStateCounts(): array {
+		global $wpdb;
+
+		return array(
+			'clients'     => (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . Schema::clientTable() ), // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Test-only count over a fixed production table.
+			'grants'      => (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . Schema::grantTable() ), // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Test-only count over a fixed production table.
+			'credentials' => (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . Schema::credentialTable() ), // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Test-only count over a fixed production table.
 		);
 	}
 

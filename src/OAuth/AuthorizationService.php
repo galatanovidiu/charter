@@ -36,6 +36,7 @@ final class AuthorizationService {
 	 * @param RateLimiter            $rateLimiter OAuth abuse counters.
 	 * @param AuditLog               $audit Security event ledger.
 	 * @param AccessPolicyProvider   $accessPolicy Active exact resource and scope registrations.
+	 * @param EmergencyContainment   $containment Issuer-local emergency mode.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
@@ -44,7 +45,8 @@ final class AuthorizationService {
 		private readonly ClientMetadataResolver $clientMetadata,
 		private readonly RateLimiter $rateLimiter,
 		private readonly AuditLog $audit,
-		private readonly AccessPolicyProvider $accessPolicy
+		private readonly AccessPolicyProvider $accessPolicy,
+		private readonly EmergencyContainment $containment
 	) {
 	}
 
@@ -61,6 +63,9 @@ final class AuthorizationService {
 		$identity = $this->siteState->identity();
 		if ( ! $this->siteState->isEnabled() || ! $this->siteState->requestMatchesIdentity() || null === $identity ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
+		}
+		if ( ! $this->containment->issuanceAllowed() ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
 
 		$issuer      = $identity->issuer();
@@ -198,6 +203,9 @@ final class AuthorizationService {
 		$client = $this->clients->findActive( $record->issuer(), $record->clientId() );
 		if ( null === $client || ( ClientRegistry::SOURCE_CIMD !== $client->source() && ! $client->allowsRedirectUri( $record->redirectUri() ) ) ) {
 			throw new ProtocolException( 'invalid_request', 'The authorization transaction is invalid or expired.' );
+		}
+		if ( $approved && ! $this->containment->issuanceAllowed() ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503, $record->redirectUri(), $record->requestState() ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Stored exact redirect and state values are protocol bindings.
 		}
 
 		if ( ! $approved ) {

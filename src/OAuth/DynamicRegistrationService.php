@@ -34,16 +34,18 @@ final class DynamicRegistrationService {
 	/**
 	 * Creates the registration service.
 	 *
-	 * @param SiteState      $siteState Site lifecycle.
-	 * @param ClientRegistry $clients Client registry.
-	 * @param RateLimiter    $rateLimiter Abuse counters.
-	 * @param AuditLog       $audit Security ledger.
+	 * @param SiteState            $siteState Site lifecycle.
+	 * @param ClientRegistry       $clients Client registry.
+	 * @param RateLimiter          $rateLimiter Abuse counters.
+	 * @param AuditLog             $audit Security ledger.
+	 * @param EmergencyContainment $containment Issuer-local emergency mode.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly ClientRegistry $clients,
 		private readonly RateLimiter $rateLimiter,
-		private readonly AuditLog $audit
+		private readonly AuditLog $audit,
+		private readonly EmergencyContainment $containment
 	) {
 	}
 
@@ -79,6 +81,9 @@ final class DynamicRegistrationService {
 		$identity = $this->siteState->identity();
 		if ( null === $identity || ! $this->siteState->isEnabled() || ! $this->siteState->requestMatchesIdentity() ) {
 			throw new DynamicRegistrationException( 'temporarily_unavailable', 'Dynamic registration is unavailable.', 503 );
+		}
+		if ( ! $this->containment->issuanceAllowed() ) {
+			throw new DynamicRegistrationException( 'temporarily_unavailable', 'Dynamic registration is temporarily unavailable.', 503 );
 		}
 		if ( ! self::isEnabled() ) {
 			throw new DynamicRegistrationException( 'temporarily_unavailable', 'New dynamic registrations are disabled.', 403 );

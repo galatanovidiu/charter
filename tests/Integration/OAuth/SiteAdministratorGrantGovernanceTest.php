@@ -13,6 +13,7 @@ use GalatanOvidiu\Charter\Admin\ConnectedAppsPage;
 use GalatanOvidiu\Charter\Admin\SettingsPage;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
 use GalatanOvidiu\Charter\OAuth\Client;
+use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
 use GalatanOvidiu\Charter\OAuth\TokenService;
@@ -57,6 +58,7 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
 		$plugin->rateLimiter()->deleteAll();
+		$plugin->containment()->delete();
 		$plugin->siteState()->delete();
 		self::assertTrue( $plugin->siteState()->prepareCurrentSite() );
 		$identity = $plugin->siteState()->identity();
@@ -79,6 +81,7 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
 		$plugin->rateLimiter()->deleteAll();
+		$plugin->containment()->delete();
 		$plugin->siteState()->delete();
 		$_GET     = array();
 		$_POST    = array();
@@ -198,8 +201,12 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 		self::assertStringContainsString( 'Continuing access: Yes', $html );
 		self::assertStringContainsString( 'charter_oauth_revoke_site_grant', $html );
 		self::assertStringContainsString( 'charter_oauth_revoke_all_site_grants', $html );
+		self::assertStringContainsString( 'Emergency containment', $html );
+		self::assertStringContainsString( 'Mode: resumed', $html );
 		self::assertStringContainsString( wp_create_nonce( 'charter_oauth_revoke_site_grant:' . hash( 'sha256', $this->issuer . "\0" . $first['grant']->id() ) ), $html );
 		self::assertStringContainsString( wp_create_nonce( 'charter_oauth_revoke_all_site_grants:' . hash( 'sha256', $this->issuer ) ), $html );
+		$containmentNonce = wp_create_nonce( 'charter_oauth_set_emergency_mode:' . hash( 'sha256', $this->issuer . "\0" . EmergencyContainment::ISSUANCE_PAUSED ) );
+		self::assertStringContainsString( $containmentNonce, $html );
 		self::assertStringNotContainsString( $first['access_token'], $html );
 		self::assertStringNotContainsString( $first['refresh_token'], $html );
 		self::assertStringNotContainsString( $other['access_token'], $html );
@@ -214,6 +221,34 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 		);
 
 		wp_set_current_user( $actorId );
+		$_POST    = array(
+			'action'         => 'charter_oauth_set_emergency_mode',
+			'mode'           => EmergencyContainment::ISSUANCE_PAUSED,
+			'confirm_action' => '1',
+			'_wpnonce'       => 'invalid-nonce',
+		);
+		$_REQUEST = $_POST; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Test synchronizes request superglobals before the production handler verifies the nonce.
+		$this->withDieHandler(
+			static function () use ( $page ): void {
+				$page->setContainmentMode();
+			},
+			'link you followed has expired'
+		);
+
+		$_POST    = array(
+			'action'   => 'charter_oauth_set_emergency_mode',
+			'mode'     => EmergencyContainment::ISSUANCE_PAUSED,
+			'_wpnonce' => $containmentNonce,
+		);
+		$_REQUEST = $_POST; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Test synchronizes request superglobals before the production handler verifies the nonce.
+		$this->withDieHandler(
+			static function () use ( $page ): void {
+				$page->setContainmentMode();
+			},
+			'emergency mode could not be changed'
+		);
+		self::assertSame( EmergencyContainment::RESUMED, $plugin->containment()->mode() );
+
 		$_POST    = array(
 			'action'   => 'charter_oauth_revoke_site_grant',
 			'grant_id' => (string) $first['grant']->id(),
@@ -322,7 +357,7 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 	private function settingsPage(): SettingsPage {
 		$plugin = Plugin::boot();
 
-		return new SettingsPage( $plugin->siteState(), $plugin->clients(), $plugin->credentials(), $plugin->clientGovernance(), $plugin->grantGovernance(), $plugin->audit() );
+		return new SettingsPage( $plugin->siteState(), $plugin->clients(), $plugin->credentials(), $plugin->clientGovernance(), $plugin->grantGovernance(), $plugin->audit(), $plugin->containment() );
 	}
 
 	/**

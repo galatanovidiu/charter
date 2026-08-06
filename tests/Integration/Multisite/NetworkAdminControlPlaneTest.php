@@ -11,9 +11,11 @@ namespace GalatanOvidiu\Charter\Tests\Integration\Multisite;
 
 use GalatanOvidiu\Charter\Admin\NetworkAdminPage;
 use GalatanOvidiu\Charter\Admin\NetworkSiteControl;
+use GalatanOvidiu\Charter\Cli\ContainmentCommand;
 use GalatanOvidiu\Charter\OAuth\AuthorizationRequest;
 use GalatanOvidiu\Charter\OAuth\Client;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
+use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
 use GalatanOvidiu\Charter\Plugin;
 use GalatanOvidiu\Charter\Schema;
@@ -67,7 +69,7 @@ final class NetworkAdminControlPlaneTest extends WP_UnitTestCase {
 	/** Creates sites whose exact prefixes have no stale custom tables. */
 	public static function set_up_before_class(): void {
 		parent::set_up_before_class();
-		foreach ( array( 'selected', 'sibling', 'grants', 'grants-sibling', 'page' ) as $label ) {
+		foreach ( array( 'selected', 'sibling', 'grants', 'grants-sibling', 'page', 'containment-one', 'containment-two', 'containment-skipped' ) as $label ) {
 			self::$operableSiteIds[] = self::createFreshFixtureSite( $label );
 		}
 	}
@@ -259,11 +261,87 @@ final class NetworkAdminControlPlaneTest extends WP_UnitTestCase {
 		self::assertFalse( $control->prepare( $siteId, $this->actorUserId, 3000 ) );
 	}
 
+	/** Verifies selected, all-site, and CLI transitions stay issuer-local and reversible. */
+	public function testEmergencyContainmentOrchestrationIsSequentialAndSiteIsolated(): void {
+		$firstId      = self::$operableSiteIds[5];
+		$secondId     = self::$operableSiteIds[6];
+		$skippedId    = self::$operableSiteIds[7];
+		$control      = $this->control();
+		$originBlog   = self::currentBlogId();
+		$firstIssuer  = $this->enableSite( $control, $firstId, 4000 );
+		$secondIssuer = $this->enableSite( $control, $secondId, 4010 );
+		$firstUser    = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		$secondUser   = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		$firstGrant   = $this->issueGrant( $firstId, $firstIssuer, 'containment-first-client', $firstUser );
+		$secondGrant  = $this->issueGrant( $secondId, $secondIssuer, 'containment-second-client', $secondUser );
+		$page         = new NetworkAdminPage( $control );
+		$nonceAction  = self::nonceAction( 'charter_oauth_network_set_containment', (string) get_current_network_id(), 'site', (string) $firstId, $firstIssuer, EmergencyContainment::ISSUANCE_PAUSED );
+		$_POST        = array(
+			'scope'    => 'site',
+			'mode'     => EmergencyContainment::ISSUANCE_PAUSED,
+			'site_id'  => (string) $firstId,
+			'issuer'   => $firstIssuer,
+			'_wpnonce' => wp_create_nonce( $nonceAction ),
+		);
+		$_REQUEST     = $_POST; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Test synchronizes the request before the production handler verifies it.
+		$this->withDieHandler( static fn () => $page->setContainment(), 'emergency containment request is invalid' );
+		self::assertSame( EmergencyContainment::RESUMED, $control->inspect( $firstId )?->containmentMode() );
+
+		self::assertFalse( $control->transitionContainment( $firstId, $secondIssuer, EmergencyContainment::ISSUANCE_PAUSED, $this->actorUserId, 4020 ) );
+		self::assertTrue( $control->transitionContainment( $firstId, $firstIssuer, EmergencyContainment::ISSUANCE_PAUSED, $this->actorUserId, 4021 ) );
+		self::assertSame( EmergencyContainment::ISSUANCE_PAUSED, $control->inspect( $firstId )?->containmentMode() );
+		self::assertSame( EmergencyContainment::RESUMED, $control->inspect( $secondId )?->containmentMode() );
+		self::assertSame( SiteState::AVAILABLE, $control->inspect( $skippedId )?->state() );
+		self::assertSame( $originBlog, self::currentBlogId() );
+		$this->assertCredentialActive( $firstId, $firstIssuer, $firstGrant['credential'] );
+		$this->assertCredentialActive( $secondId, $secondIssuer, $secondGrant['credential'] );
+
+		$allLocked = $control->transitionAllContainment( EmergencyContainment::LOCKDOWN, $this->actorUserId, 4022 );
+		self::assertGreaterThanOrEqual( 2, $allLocked['changed'] );
+		self::assertGreaterThanOrEqual( 1, $allLocked['skipped'] );
+		self::assertSame( 0, $allLocked['pending'] );
+		self::assertSame( 0, $allLocked['failed'] );
+		self::assertSame( EmergencyContainment::LOCKDOWN, $control->inspect( $firstId )?->containmentMode() );
+		self::assertSame( EmergencyContainment::LOCKDOWN, $control->inspect( $secondId )?->containmentMode() );
+		self::assertSame( SiteState::AVAILABLE, $control->inspect( $skippedId )?->state() );
+		self::assertSame( $originBlog, self::currentBlogId() );
+		$this->assertCredentialActive( $firstId, $firstIssuer, $firstGrant['credential'] );
+		$this->assertCredentialActive( $secondId, $secondIssuer, $secondGrant['credential'] );
+
+		$plugin         = Plugin::boot();
+		$command        = new ContainmentCommand( $plugin->containment(), $plugin->siteState() );
+		$selectedResume = $command->transitionSites( array( $secondId, $firstId ), EmergencyContainment::RESUMED, 4023 );
+		self::assertSame( array( $secondId, $firstId ), array_keys( $selectedResume ) );
+		self::assertTrue( $selectedResume[ $secondId ]['changed'] ?? false );
+		self::assertTrue( $selectedResume[ $firstId ]['changed'] ?? false );
+		self::assertFalse( $selectedResume[ $secondId ]['audit_pending'] ?? true );
+		self::assertFalse( $selectedResume[ $firstId ]['audit_pending'] ?? true );
+		$status = $command->statusForSites( array( $firstId, $secondId ) );
+		self::assertSame( EmergencyContainment::RESUMED, $status[ $firstId ]['mode'] ?? null );
+		self::assertSame( EmergencyContainment::RESUMED, $status[ $secondId ]['mode'] ?? null );
+		self::assertSame( $originBlog, self::currentBlogId() );
+
+		$firstSnapshot  = $control->inspect( $firstId );
+		$secondSnapshot = $control->inspect( $secondId );
+		self::assertNotNull( $firstSnapshot );
+		self::assertNotNull( $secondSnapshot );
+		$firstReasons  = array_map( static fn ( AuditEvent $event ): string => $event->reason(), $firstSnapshot->events() );
+		$secondReasons = array_map( static fn ( AuditEvent $event ): string => $event->reason(), $secondSnapshot->events() );
+		self::assertContains( 'network_administrator_issuance_paused', $firstReasons );
+		self::assertContains( 'network_administrator_lockdown', $firstReasons );
+		self::assertContains( 'wp_cli_resumed', $firstReasons );
+		self::assertNotContains( 'network_administrator_issuance_paused', $secondReasons, 'The first selected-site transition must not reach the sibling issuer.' );
+		self::assertContains( 'network_administrator_lockdown', $secondReasons );
+		self::assertContains( 'wp_cli_resumed', $secondReasons );
+		$this->assertCredentialActive( $firstId, $firstIssuer, $firstGrant['credential'] );
+		$this->assertCredentialActive( $secondId, $secondIssuer, $secondGrant['credential'] );
+	}
+
 	/** Returns the production network service composed over current-site services. */
 	private function control(): NetworkSiteControl {
 		$plugin = Plugin::boot();
 
-		return new NetworkSiteControl( $plugin->siteState(), $plugin->credentials(), $plugin->grantGovernance(), $plugin->audit() );
+		return new NetworkSiteControl( $plugin->siteState(), $plugin->credentials(), $plugin->grantGovernance(), $plugin->audit(), $plugin->containment() );
 	}
 
 	/**

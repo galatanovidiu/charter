@@ -92,10 +92,11 @@ try {
 
 	echo 'CHARTER_NETWORK_RESULT=' . wp_json_encode(
 		array(
-			'state'         => $charterNetworkState->state(),
-			'issuer'        => null === $charterNetworkIdentity ? null : $charterNetworkIdentity->issuer(),
-			'active_grants' => $charterNetworkCount,
-			'audit_reasons' => $charterNetworkReasons,
+			'state'            => $charterNetworkState->state(),
+			'issuer'           => null === $charterNetworkIdentity ? null : $charterNetworkIdentity->issuer(),
+			'containment_mode' => $charterNetworkPlugin->containment()->mode(),
+			'active_grants'    => $charterNetworkCount,
+			'audit_reasons'    => $charterNetworkReasons,
 		),
 		JSON_UNESCAPED_SLASHES
 	) . "\n";

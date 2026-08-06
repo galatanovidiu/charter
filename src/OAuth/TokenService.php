@@ -32,12 +32,14 @@ final class TokenService {
 	 * @param ClientRegistry       $clients Client registry.
 	 * @param CredentialStore      $credentials Grant and credential persistence.
 	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
+	 * @param EmergencyContainment $containment Issuer-local emergency mode.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly ClientRegistry $clients,
 		private readonly CredentialStore $credentials,
-		private readonly AccessPolicyProvider $accessPolicy
+		private readonly AccessPolicyProvider $accessPolicy,
+		private readonly EmergencyContainment $containment
 	) {
 	}
 
@@ -71,6 +73,12 @@ final class TokenService {
 		$client = $this->clients->authenticateForTokenEndpoint( $identity->issuer(), $clientId, $secretPresented, $clientSecret );
 		if ( null === $client ) {
 			throw new ProtocolException( 'invalid_client', 'Client authentication failed.', 401 );
+		}
+		if (
+			in_array( $grantType, array( Client::GRANT_AUTHORIZATION_CODE, Client::GRANT_REFRESH_TOKEN ), true )
+			&& ! $this->containment->issuanceAllowed()
+		) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
 
 		return match ( $grantType ) {
@@ -270,6 +278,9 @@ final class TokenService {
 	public function validateAccessToken( string $token, string $resourceIdentifier, array $requiredScopes ): AccessTokenContext {
 		$identity = $this->siteState->identity();
 		if ( ! $this->siteState->isEnabled() || ! $this->siteState->requestMatchesIdentity() || null === $identity ) {
+			throw new ProtocolException( 'invalid_token', 'The access token is invalid.', 401 );
+		}
+		if ( ! $this->containment->bearerAllowed() ) {
 			throw new ProtocolException( 'invalid_token', 'The access token is invalid.', 401 );
 		}
 

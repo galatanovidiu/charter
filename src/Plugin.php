@@ -30,6 +30,7 @@ use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\CredentialHasher;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
+use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\RetentionCleanup;
 use GalatanOvidiu\Charter\OAuth\TokenService;
@@ -163,6 +164,13 @@ final class Plugin {
 	private readonly ClientCleanup $cleanup;
 
 	/**
+	 * Issuer-local reversible emergency mode.
+	 *
+	 * @var EmergencyContainment
+	 */
+	private readonly EmergencyContainment $containment;
+
+	/**
 	 * Request-local integration access registrations.
 	 *
 	 * @var AccessPolicyProvider
@@ -181,14 +189,15 @@ final class Plugin {
 		$this->clientMetadataSnapshots = new ClientMetadataSnapshotStore();
 		$this->accessPolicy            = new AccessPolicyProvider();
 		$this->audit                   = new AuditLog();
+		$this->containment             = new EmergencyContainment( $this->siteState, $this->audit );
 		$this->rateLimiter             = new RateLimiter();
 		$this->cleanup                 = new ClientCleanup( $this->siteState, new RetentionCleanup(), $this->audit );
 		$this->clientGovernance        = new ClientGovernance( $this->clients, $this->credentials, $this->audit, $this->clientMetadataSnapshots );
 		$this->grantGovernance         = new GrantGovernance( $this->credentials, $this->audit );
-		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
+		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit, $this->containment );
 		$clientMetadata                = new ClientMetadataResolver( $this->clients, $this->clientMetadataSnapshots, new BoundedHostResolver(), new BoundedDirectJsonFetcher() );
-		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit, $this->accessPolicy );
-		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy );
+		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit, $this->accessPolicy, $this->containment );
+		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy, $this->containment );
 		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens, $this->accessPolicy );
 
 		if ( function_exists( 'add_action' ) ) {
@@ -228,7 +237,7 @@ final class Plugin {
 		$plugin = self::boot();
 		Schema::install();
 		$plugin->siteState->prepareCurrentSite();
-		( new MetadataController( $plugin->siteState, $plugin->accessPolicy ) )->registerRewriteRules();
+		( new MetadataController( $plugin->siteState, $plugin->accessPolicy, $plugin->containment ) )->registerRewriteRules();
 		flush_rewrite_rules();
 	}
 
@@ -334,6 +343,11 @@ final class Plugin {
 		return $this->cleanup;
 	}
 
+	/** Returns the current issuer's reversible emergency containment. */
+	public function containment(): EmergencyContainment {
+		return $this->containment;
+	}
+
 	/**
 	 * Prepares an existing active single site after a plugin-code upgrade.
 	 *
@@ -361,14 +375,14 @@ final class Plugin {
 	 * @since 0.1.0
 	 */
 	private function registerHooks(): void {
-		$metadata      = new MetadataController( $this->siteState, $this->accessPolicy );
+		$metadata      = new MetadataController( $this->siteState, $this->accessPolicy, $this->containment );
 		$tokens        = new TokenController( $this->tokens );
 		$revocation    = new RevocationController( $this->tokens );
 		$registration  = new RegistrationController( $this->dynamicRegistration );
 		$authorization = new AuthorizationController( $this->siteState, $this->authorization );
-		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit );
+		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit, $this->containment );
 		$connectedApps = new ConnectedAppsPage( $this->siteState, $this->clients, $this->credentials );
-		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit ) );
+		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit, $this->containment ) );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );
 		$cors          = new CorsPolicy();
 
@@ -386,6 +400,7 @@ final class Plugin {
 		$userEvents->registerHooks();
 		$cors->registerHooks();
 		$this->cleanup->registerHooks();
+		$this->containment->registerHooks();
 		$this->bearerAuthenticator->registerHooks();
 	}
 }

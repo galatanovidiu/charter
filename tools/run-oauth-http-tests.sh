@@ -63,6 +63,29 @@ html_field() {
 	' "${file}" "${field}"
 }
 
+form_field_by_value() {
+	local file=$1
+	local selector_name=$2
+	local selector_value=$3
+	local field=$4
+
+	php -r '
+		$document = new DOMDocument();
+		@$document->loadHTMLFile( $argv[1] );
+		foreach ( $document->getElementsByTagName( "form" ) as $form ) {
+			$values = array();
+			foreach ( $form->getElementsByTagName( "input" ) as $input ) {
+				$values[ $input->getAttribute( "name" ) ] = $input->getAttribute( "value" );
+			}
+			if ( ( $values[ $argv[2] ] ?? null ) === $argv[3] ) {
+				echo $values[ $argv[4] ] ?? "";
+				exit;
+			}
+		}
+		exit( 1 );
+	' "${file}" "${selector_name}" "${selector_value}" "${field}"
+}
+
 header_location() {
 	local file=$1
 
@@ -105,9 +128,25 @@ authorize_logged_in() {
 
 	status="$(curl --silent --show-error \
 		-b "${charter_http_tmp}/cookies.txt" \
+		-D "${charter_http_tmp}/${prefix}-initial.headers" \
 		-o "${charter_http_tmp}/${prefix}-consent.html" \
 		-w '%{http_code}' \
 		"${authorization_url}")"
+	if [[ "${status}" == 302 ]]; then
+		callback="$(header_location "${charter_http_tmp}/${prefix}-initial.headers")"
+		charter_http_authorized_code="$(php -r '
+			parse_str( (string) parse_url( $argv[1], PHP_URL_QUERY ), $parameters );
+			if ( ( $parameters["iss"] ?? null ) !== $argv[2] || ( $parameters["state"] ?? null ) !== $argv[3] ) {
+				exit( 1 );
+			}
+			echo $parameters["code"] ?? "";
+		' "${callback}" "${charter_http_issuer}" "${state}")"
+		if [[ -z "${charter_http_authorized_code}" ]]; then
+			echo "${prefix} reusable authorization response did not contain an issuer-bound code." >&2
+			exit 1
+		fi
+		return
+	fi
 	assert_status 200 "${status}" "${prefix} OAuth consent"
 
 	transaction="$(html_field "${charter_http_tmp}/${prefix}-consent.html" transaction)"
@@ -439,6 +478,7 @@ charter_http_status="$(curl --silent --show-error \
 	"${charter_http_token_endpoint}")"
 assert_status 200 "${charter_http_status}" 'dynamic client authorization code exchange'
 charter_http_dynamic_access="$(json_field "${charter_http_tmp}/dynamic-token.json" access_token)"
+charter_http_dynamic_refresh="$(json_field "${charter_http_tmp}/dynamic-token.json" refresh_token)"
 charter_http_status="$(curl --silent --show-error \
 	-H "Authorization: Bearer ${charter_http_dynamic_access}" \
 	-o "${charter_http_tmp}/dynamic-protected.json" \
@@ -554,6 +594,163 @@ assert_status 200 "${charter_http_status}" 'revocable confidential grant issue'
 charter_http_revocable_access="$(json_field "${charter_http_tmp}/backend-revocable-token.json" access_token)"
 charter_http_revocable_refresh="$(json_field "${charter_http_tmp}/backend-revocable-token.json" refresh_token)"
 
+authorize_logged_in \
+	"${charter_http_dynamic_client}" \
+	'https://dynamic.example.test/callback' \
+	'wordpress:access offline_access' \
+	'containment-code-state' \
+	"${charter_http_dynamic_verifier}" \
+	'containment-code'
+charter_http_containment_code="${charter_http_authorized_code}"
+
+curl --silent --show-error -c "${charter_http_tmp}/admin-cookies.txt" "${charter_http_issuer}/wp-login.php" -o "${charter_http_tmp}/admin-login.html"
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/admin-cookies.txt" \
+	-c "${charter_http_tmp}/admin-cookies.txt" \
+	-D "${charter_http_tmp}/admin-login.headers" \
+	-o /dev/null \
+	-w '%{http_code}' \
+	--data-urlencode 'log=charter-oauth-admin' \
+	--data-urlencode 'pwd=charter-http-admin-password' \
+	--data-urlencode "redirect_to=${charter_http_issuer}/wp-admin/options-general.php?page=charter-oauth" \
+	--data-urlencode 'testcookie=1' \
+	"${charter_http_issuer}/wp-login.php")"
+assert_status 302 "${charter_http_status}" 'WordPress administrator login'
+
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/admin-cookies.txt" \
+	-o "${charter_http_tmp}/settings-containment.html" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-admin/options-general.php?page=charter-oauth")"
+assert_status 200 "${charter_http_status}" 'Site Admin containment inspection'
+if ! grep -q 'Emergency containment' "${charter_http_tmp}/settings-containment.html" || ! grep -q 'Mode: resumed' "${charter_http_tmp}/settings-containment.html"; then
+	echo 'Site Admin did not expose the resumed containment state.' >&2
+	exit 1
+fi
+charter_http_nonce="$(form_field_by_value "${charter_http_tmp}/settings-containment.html" mode issuance_paused _wpnonce)"
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/admin-cookies.txt" \
+	-D "${charter_http_tmp}/settings-pause.headers" \
+	-o /dev/null \
+	-w '%{http_code}' \
+	--data 'action=charter_oauth_set_emergency_mode' \
+	--data 'mode=issuance_paused' \
+	--data 'confirm_action=1' \
+	--data-urlencode "_wpnonce=${charter_http_nonce}" \
+	"${charter_http_issuer}/wp-admin/admin-post.php")"
+assert_status 302 "${charter_http_status}" 'Site Admin issuance pause'
+
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/admin-cookies.txt" \
+	-o "${charter_http_tmp}/settings-paused.html" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-admin/options-general.php?page=charter-oauth")"
+assert_status 200 "${charter_http_status}" 'paused Site Admin containment inspection'
+if ! grep -q 'Mode: issuance_paused' "${charter_http_tmp}/settings-paused.html"; then
+	echo 'Site Admin did not report the issuer-local paused state.' >&2
+	exit 1
+fi
+charter_http_nonce="$(form_field_by_value "${charter_http_tmp}/settings-paused.html" mode resumed _wpnonce)"
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/admin-cookies.txt" \
+	-D "${charter_http_tmp}/settings-resume.headers" \
+	-o /dev/null \
+	-w '%{http_code}' \
+	--data 'action=charter_oauth_set_emergency_mode' \
+	--data 'mode=resumed' \
+	--data 'confirm_action=1' \
+	--data-urlencode "_wpnonce=${charter_http_nonce}" \
+	"${charter_http_issuer}/wp-admin/admin-post.php")"
+assert_status 302 "${charter_http_status}" 'Site Admin OAuth resume'
+
+"${charter_wp_env[@]}" run cli --config=.wp-env.test.json wp charter oauth containment --status > "${charter_http_tmp}/containment-resumed.txt"
+if ! grep -q 'mode=resumed' "${charter_http_tmp}/containment-resumed.txt"; then
+	echo 'WP-CLI did not report the default resumed containment mode.' >&2
+	exit 1
+fi
+"${charter_wp_env[@]}" run cli --config=.wp-env.test.json wp charter oauth containment --mode=pause --confirm > "${charter_http_tmp}/containment-pause.txt"
+
+curl --fail --silent --show-error \
+	"${charter_http_issuer}/.well-known/oauth-authorization-server" \
+	-o "${charter_http_tmp}/paused-authorization-metadata.json"
+if grep -q 'registration_endpoint' "${charter_http_tmp}/paused-authorization-metadata.json"; then
+	echo 'Paused metadata still advertised Dynamic Client Registration.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-H 'Content-Type: application/json' \
+	-o "${charter_http_tmp}/paused-registration.json" \
+	-w '%{http_code}' \
+	--data '{"client_name":"Paused client","redirect_uris":["https://paused.example.test/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}' \
+	"${charter_http_registration_endpoint}")"
+assert_status 503 "${charter_http_status}" 'paused Dynamic Client Registration'
+if [[ "$(json_field "${charter_http_tmp}/paused-registration.json" error)" != 'temporarily_unavailable' ]]; then
+	echo 'Paused Dynamic Client Registration did not own the temporarily_unavailable error.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/cookies.txt" \
+	-o "${charter_http_tmp}/paused-authorization.html" \
+	-w '%{http_code}' \
+	"${charter_http_authorization_url}")"
+assert_status 503 "${charter_http_status}" 'paused new authorization'
+
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/paused-code-exchange.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=authorization_code' \
+	--data-urlencode "client_id=${charter_http_dynamic_client}" \
+	--data-urlencode "code=${charter_http_containment_code}" \
+	--data-urlencode "code_verifier=${charter_http_dynamic_verifier}" \
+	--data-urlencode 'redirect_uri=https://dynamic.example.test/callback' \
+	"${charter_http_token_endpoint}")"
+assert_status 503 "${charter_http_status}" 'paused authorization-code exchange'
+if [[ "$(json_field "${charter_http_tmp}/paused-code-exchange.json" error)" != 'temporarily_unavailable' ]]; then
+	echo 'Paused code exchange did not own the temporarily_unavailable error.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/paused-refresh.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=refresh_token' \
+	--data-urlencode "client_id=${charter_http_dynamic_client}" \
+	--data-urlencode "refresh_token=${charter_http_dynamic_refresh}" \
+	"${charter_http_token_endpoint}")"
+assert_status 503 "${charter_http_status}" 'paused refresh'
+if [[ "$(json_field "${charter_http_tmp}/paused-refresh.json" error)" != 'temporarily_unavailable' ]]; then
+	echo 'Paused refresh did not own the temporarily_unavailable error.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_dynamic_access}" \
+	-o "${charter_http_tmp}/paused-existing-access.json" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-json/charter-http/v1/protected")"
+assert_status 200 "${charter_http_status}" 'paused existing Bearer access'
+
+"${charter_wp_env[@]}" run cli --config=.wp-env.test.json wp charter oauth containment --mode=lockdown --confirm > "${charter_http_tmp}/containment-lockdown.txt"
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_dynamic_access}" \
+	-o "${charter_http_tmp}/lockdown-existing-access.json" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-json/charter-http/v1/protected")"
+assert_status 401 "${charter_http_status}" 'lockdown existing Bearer rejection'
+if [[ "$(json_field "${charter_http_tmp}/lockdown-existing-access.json" error)" != 'invalid_token' ]]; then
+	echo 'Lockdown did not return the generic Charter invalid-token owner.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-H "Authorization: Bearer ${charter_http_dynamic_access}" \
+	-o "${charter_http_tmp}/lockdown-public.json" \
+	-w '%{http_code}' \
+	"${charter_http_issuer}/wp-json/charter-http/v1/public")"
+assert_status 200 "${charter_http_status}" 'lockdown public route preservation'
+
 charter_http_status="$(curl --silent --show-error \
 	-H 'Origin: https://backend.example.test' \
 	-D "${charter_http_tmp}/revocation.headers" \
@@ -575,6 +772,26 @@ charter_http_status="$(curl --silent --show-error \
 	-w '%{http_code}' \
 	"${charter_http_issuer}/wp-json/charter-http/v1/protected")"
 assert_status 401 "${charter_http_status}" 'RFC 7009 grant-wide descendant closure'
+
+"${charter_wp_env[@]}" run cli --config=.wp-env.test.json wp charter oauth containment --mode=resume --confirm > "${charter_http_tmp}/containment-resume.txt"
+curl --fail --silent --show-error \
+	"${charter_http_issuer}/.well-known/oauth-authorization-server" \
+	-o "${charter_http_tmp}/resumed-authorization-metadata.json"
+if ! grep -q 'registration_endpoint' "${charter_http_tmp}/resumed-authorization-metadata.json"; then
+	echo 'Resumed metadata did not restore Dynamic Client Registration advertisement.' >&2
+	exit 1
+fi
+
+charter_http_status="$(curl --silent --show-error \
+	-o "${charter_http_tmp}/resumed-code-exchange.json" \
+	-w '%{http_code}' \
+	--data-urlencode 'grant_type=authorization_code' \
+	--data-urlencode "client_id=${charter_http_dynamic_client}" \
+	--data-urlencode "code=${charter_http_containment_code}" \
+	--data-urlencode "code_verifier=${charter_http_dynamic_verifier}" \
+	--data-urlencode 'redirect_uri=https://dynamic.example.test/callback' \
+	"${charter_http_token_endpoint}")"
+assert_status 200 "${charter_http_status}" 'resumed authorization-code exchange'
 
 charter_http_mcp_resource="${charter_http_issuer}/wp-json/charter-http/v1/mcp"
 charter_http_mcp_metadata="${charter_http_issuer}/.well-known/oauth-protected-resource/wp-json/charter-http/v1/mcp"

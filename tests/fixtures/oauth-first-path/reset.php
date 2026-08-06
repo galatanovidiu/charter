@@ -12,6 +12,7 @@ $charterHttpPlugin = Plugin::boot();
 Schema::install();
 $charterHttpPlugin->credentials()->deleteAll();
 $charterHttpPlugin->clients()->deleteAll();
+$charterHttpPlugin->containment()->delete();
 $charterHttpPlugin->siteState()->delete();
 delete_option( 'charter_http_disable_mcp_profile' );
 

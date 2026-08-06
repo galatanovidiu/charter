@@ -11,10 +11,9 @@ namespace GalatanOvidiu\Charter\Cli;
 
 use GalatanOvidiu\Charter\OAuth\ClientCleanup;
 use GalatanOvidiu\Charter\Schema;
-use GalatanOvidiu\Charter\Site\NetworkActivation;
+use GalatanOvidiu\Charter\Site\SiteOrchestrator;
 use GalatanOvidiu\Charter\Site\SiteState;
 use Throwable;
-use WP_Site;
 
 /**
  * Runs or inspects bounded cleanup for the current or explicitly selected sites.
@@ -67,7 +66,7 @@ final class CleanupCommand {
 	 */
 	public function __invoke( array $arguments, array $options ): void {
 		unset( $arguments );
-		$siteIds    = $this->selectedSiteIds( $options );
+		$siteIds    = SiteTargets::resolve( $options, false );
 		$statusOnly = array_key_exists( 'status', $options );
 		$batchSize  = self::boundedOption( $options, 'batch-size', 100 );
 		$maxBatches = self::boundedOption( $options, 'max-batches', 10 );
@@ -128,41 +127,38 @@ final class CleanupCommand {
 		$maxBatches = max( 1, min( 100, $maxBatches ) );
 		$results    = array();
 		foreach ( $siteIds as $siteId ) {
-			if ( ! $this->isOperableSite( $siteId ) ) {
+			if ( ! SiteOrchestrator::isOperableSite( $siteId ) ) {
 				$results[ $siteId ] = array( 'error' => 'site_not_operable' );
 				continue;
 			}
-			$switched = is_multisite();
-			if ( $switched ) {
-				switch_to_blog( $siteId );
-			}
 			try {
-				if ( null === $this->siteState->identity() || ! Schema::isInstalled() ) {
-					$results[ $siteId ] = array( 'error' => 'issuer_not_prepared' );
-					continue;
-				}
-				$deleted = 0;
-				$batches = 0;
-				$hasMore = false;
-				do {
-					$result   = $this->cleanup->execute( $timestamp ?? time(), $batchSize, false );
-					$deleted += $result->totalDeleted();
-					$hasMore  = $result->hasMore();
-					++$batches;
-				} while ( $hasMore && $batches < $maxBatches );
-				$status             = $this->cleanup->statusSnapshot( $timestamp );
-				$results[ $siteId ] = array(
-					'deleted'  => $deleted,
-					'batches'  => $batches,
-					'has_more' => $hasMore,
-					'state'    => $status['state'],
+				$results[ $siteId ] = SiteOrchestrator::withinSite(
+					$siteId,
+					function () use ( $timestamp, $batchSize, $maxBatches ): array {
+						if ( null === $this->siteState->identity() || ! Schema::isInstalled() ) {
+							return array( 'error' => 'issuer_not_prepared' );
+						}
+						$deleted = 0;
+						$batches = 0;
+						$hasMore = false;
+						do {
+							$result   = $this->cleanup->execute( $timestamp ?? time(), $batchSize, false );
+							$deleted += $result->totalDeleted();
+							$hasMore  = $result->hasMore();
+							++$batches;
+						} while ( $hasMore && $batches < $maxBatches );
+						$status = $this->cleanup->statusSnapshot( $timestamp );
+
+						return array(
+							'deleted'  => $deleted,
+							'batches'  => $batches,
+							'has_more' => $hasMore,
+							'state'    => $status['state'],
+						);
+					}
 				);
 			} catch ( Throwable ) {
 				$results[ $siteId ] = array( 'error' => 'cleanup_execution_failed' );
-			} finally {
-				if ( $switched ) {
-					restore_current_blog();
-				}
 			}
 		}
 
@@ -179,94 +175,28 @@ final class CleanupCommand {
 	public function statusForSites( array $siteIds, ?int $timestamp = null ): array {
 		$results = array();
 		foreach ( $siteIds as $siteId ) {
-			if ( ! $this->isOperableSite( $siteId ) ) {
+			if ( ! SiteOrchestrator::isOperableSite( $siteId ) ) {
 				$results[ $siteId ] = array( 'error' => 'site_not_operable' );
 				continue;
 			}
-			$switched = is_multisite();
-			if ( $switched ) {
-				switch_to_blog( $siteId );
-			}
 			try {
-				$status = $this->cleanup->statusSnapshot( $timestamp );
-				if ( null === $this->siteState->identity() || ! Schema::isInstalled() ) {
-					$status['state'] = 'not_configured';
-				}
-				$results[ $siteId ] = $status;
+				$results[ $siteId ] = SiteOrchestrator::withinSite(
+					$siteId,
+					function () use ( $timestamp ): array {
+						$status = $this->cleanup->statusSnapshot( $timestamp );
+						if ( null === $this->siteState->identity() || ! Schema::isInstalled() ) {
+							$status['state'] = 'not_configured';
+						}
+
+						return $status;
+					}
+				);
 			} catch ( Throwable ) {
 				$results[ $siteId ] = array( 'error' => 'cleanup_status_failed' );
-			} finally {
-				if ( $switched ) {
-					restore_current_blog();
-				}
 			}
 		}
 
 		return $results;
-	}
-
-	/**
-	 * Resolves current, selected-site, or explicitly selected network jobs.
-	 *
-	 * @param array<string, mixed> $options Named WP-CLI options.
-	 * @return array<int>
-	 */
-	private function selectedSiteIds( array $options ): array {
-		$network = array_key_exists( 'network', $options );
-		$site    = $options['site'] ?? null;
-		$sites   = $options['sites'] ?? null;
-		if ( $network ) {
-			if ( null !== $site || ! is_string( $sites ) || '' === trim( $sites ) || ! NetworkActivation::isActive() ) {
-				\WP_CLI::error( '--network requires --sites on a network-active installation and cannot be combined with --site.' );
-				return array();
-			}
-			$tokens = array_map( 'trim', explode( ',', $sites ) );
-			if ( 100 < count( $tokens ) || array_filter( $tokens, static fn ( string $token ): bool => ! ctype_digit( $token ) || 0 === (int) $token ) ) {
-				\WP_CLI::error( '--sites must contain between 1 and 100 positive site IDs.' );
-				return array();
-			}
-			$ids = array_values( array_unique( array_map( 'intval', $tokens ) ) );
-
-			return $ids;
-		}
-		if ( null !== $sites ) {
-			\WP_CLI::error( '--sites requires --network.' );
-			return array();
-		}
-		if ( null !== $site ) {
-			if ( ! NetworkActivation::isActive() || ( ! is_string( $site ) && ! is_int( $site ) ) || ! ctype_digit( (string) $site ) || 0 === (int) $site ) {
-				\WP_CLI::error( '--site requires one positive site ID on a network-active installation.' );
-				return array();
-			}
-
-			return array( (int) $site );
-		}
-
-		return array( self::currentSiteId() );
-	}
-
-	/**
-	 * Reports whether a site is a live member of the current network boundary.
-	 *
-	 * @param int $siteId WordPress site identifier.
-	 */
-	private function isOperableSite( int $siteId ): bool {
-		if ( $siteId <= 0 ) {
-			return false;
-		}
-		if ( ! is_multisite() ) {
-			return self::currentSiteId() === $siteId;
-		}
-		if ( ! NetworkActivation::isActive() && self::currentSiteId() !== $siteId ) {
-			return false;
-		}
-		$site = get_site( $siteId );
-
-		return $site instanceof WP_Site
-			&& get_current_network_id() === (int) $site->network_id
-			&& '1' !== $site->archived
-			&& '1' !== $site->spam
-			&& '1' !== $site->deleted;
 	}
 
 	/**
@@ -288,17 +218,6 @@ final class CleanupCommand {
 
 		return (int) $value;
 	}
-
-	/** Returns WordPress's current non-identity site locator. */
-	private static function currentSiteId(): int {
-		global $wpdb;
-
-		if ( ! $wpdb instanceof \wpdb ) {
-			return 0;
-		}
-		return $wpdb->blogid;
-	}
-
 	/**
 	 * Formats status without issuer or credential material.
 	 *

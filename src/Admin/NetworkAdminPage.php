@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter\Admin;
 
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
+use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\Site\NetworkActivation;
 use GalatanOvidiu\Charter\Site\SiteState;
 use WP_Site;
@@ -21,13 +22,14 @@ use WP_Site;
  */
 final class NetworkAdminPage {
 
-	private const PAGE_SLUG         = 'charter-oauth-network';
-	private const PREPARE_ACTION    = 'charter_oauth_network_prepare_site';
-	private const ENABLE_ACTION     = 'charter_oauth_network_enable_site';
-	private const REVOKE_ACTION     = 'charter_oauth_network_revoke_site_grant';
-	private const REVOKE_ALL_ACTION = 'charter_oauth_network_revoke_all_site_grants';
-	private const SITES_PER_PAGE    = 50;
-	private const GRANTS_PER_PAGE   = 50;
+	private const PAGE_SLUG          = 'charter-oauth-network';
+	private const PREPARE_ACTION     = 'charter_oauth_network_prepare_site';
+	private const ENABLE_ACTION      = 'charter_oauth_network_enable_site';
+	private const REVOKE_ACTION      = 'charter_oauth_network_revoke_site_grant';
+	private const REVOKE_ALL_ACTION  = 'charter_oauth_network_revoke_all_site_grants';
+	private const CONTAINMENT_ACTION = 'charter_oauth_network_set_containment';
+	private const SITES_PER_PAGE     = 50;
+	private const GRANTS_PER_PAGE    = 50;
 
 	/**
 	 * Creates the Network Admin screen.
@@ -44,6 +46,7 @@ final class NetworkAdminPage {
 		add_action( 'network_admin_edit_' . self::ENABLE_ACTION, array( $this, 'enableSite' ) );
 		add_action( 'network_admin_edit_' . self::REVOKE_ACTION, array( $this, 'revokeGrant' ) );
 		add_action( 'network_admin_edit_' . self::REVOKE_ALL_ACTION, array( $this, 'revokeAllGrants' ) );
+		add_action( 'network_admin_edit_' . self::CONTAINMENT_ACTION, array( $this, 'setContainment' ) );
 	}
 
 	/** Adds Charter beneath Network Settings only while network-activated. */
@@ -87,6 +90,7 @@ final class NetworkAdminPage {
 			<h1><?php esc_html_e( 'Charter OAuth network control', 'charter' ); ?></h1>
 			<p><?php esc_html_e( 'Select one site to inspect or govern its own OAuth issuer. This screen does not create network clients, grants, credentials, or an OAuth issuer for the network.', 'charter' ); ?></p>
 			<?php $this->renderUpdatedNotice(); ?>
+			<?php $this->renderAllContainmentControls(); ?>
 
 			<h2><?php esc_html_e( 'Network sites', 'charter' ); ?></h2>
 			<?php if ( array() === $siteList ) : ?>
@@ -172,6 +176,50 @@ final class NetworkAdminPage {
 		$this->redirect( $siteId, 'site_revoked' );
 	}
 
+	/** Applies one selected-site or all-site reversible containment action. */
+	public function setContainment(): never {
+		$this->requireNetworkOperator();
+		$scope  = self::postScalar( 'scope' );
+		$mode   = self::postScalar( 'mode' );
+		$siteId = absint( self::postScalar( 'site_id' ) );
+		$issuer = self::postScalar( 'issuer' );
+		check_admin_referer( self::containmentNonceAction( $scope, $mode, $siteId, $issuer ) );
+
+		if ( '1' !== self::postScalar( 'confirm_action' ) || ! EmergencyContainment::isMode( $mode ) ) {
+			wp_die( esc_html__( 'The OAuth emergency containment request is invalid.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		if ( 'site' === $scope ) {
+			if ( ! $this->sites->transitionContainment( $siteId, $issuer, $mode, get_current_user_id(), time() ) ) {
+				wp_die( esc_html__( 'The selected site containment mode could not be changed.', 'charter' ), '', array( 'response' => 400 ) );
+			}
+			$auditPending = $this->sites->containmentAuditPending( $siteId );
+			$updated      = false === $auditPending ? 'containment' : 'containment_pending';
+			wp_safe_redirect( $this->settingsUrl( $siteId, array( 'updated' => $updated ) ) );
+			exit;
+		}
+
+		if ( 'all' !== $scope || 0 !== $siteId || '' !== $issuer ) {
+			wp_die( esc_html__( 'The OAuth emergency containment scope is invalid.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		$counts = $this->sites->transitionAllContainment( $mode, get_current_user_id(), time() );
+		wp_safe_redirect(
+			$this->settingsUrl(
+				0,
+				array(
+					'updated'   => 'containment_all',
+					'changed'   => $counts['changed'],
+					'unchanged' => $counts['unchanged'],
+					'skipped'   => $counts['skipped'],
+					'pending'   => $counts['pending'],
+					'failed'    => $counts['failed'],
+				)
+			)
+		);
+		exit;
+	}
+
 	/**
 	 * Renders one selected site's lifecycle, grants, and own event ledger.
 	 *
@@ -194,6 +242,10 @@ final class NetworkAdminPage {
 			<?php endif; ?>
 		<?php else : ?>
 			<p><?php /* translators: %s: Exact selected site issuer and resource. */ echo esc_html( sprintf( __( 'Exact issuer and default resource: %s', 'charter' ), $identity->issuer() ) ); ?></p>
+			<p><?php /* translators: 1: Current containment mode, 2: Last transition actor, 3: Audit state. */ echo esc_html( sprintf( __( 'Containment mode: %1$s. Last actor: %2$s. Audit: %3$s.', 'charter' ), $snapshot->containmentMode(), '' === $snapshot->containmentActor() ? __( 'Default', 'charter' ) : $snapshot->containmentActor(), $snapshot->containmentAuditPending() ? __( 'Pending reconciliation', 'charter' ) : __( 'Recorded', 'charter' ) ) ); ?></p>
+			<?php if ( SiteState::ENABLED === $snapshot->state() ) : ?>
+				<?php $this->renderSelectedContainmentControls( $snapshot->siteId(), $identity->issuer() ); ?>
+			<?php endif; ?>
 			<?php if ( SiteState::PREPARED === $snapshot->state() ) : ?>
 				<?php $this->renderEnableForm( $snapshot->siteId(), $identity->issuer() ); ?>
 			<?php endif; ?>
@@ -231,6 +283,58 @@ final class NetworkAdminPage {
 				</tbody></table>
 			<?php endif; ?>
 		<?php endif; ?>
+		<?php
+	}
+
+	/** Renders network-wide sequential emergency controls. */
+	private function renderAllContainmentControls(): void {
+		?>
+		<h2><?php esc_html_e( 'Network emergency containment', 'charter' ); ?></h2>
+		<p><?php esc_html_e( 'Each action visits every live network site sequentially, changes only enabled site issuers, and restores the original site after every isolated transition.', 'charter' ); ?></p>
+		<?php
+		$this->renderContainmentForm( 'all', 0, '', EmergencyContainment::RESUMED, __( 'Resume all enabled issuers', 'charter' ), __( 'Resume every enabled site issuer in this network.', 'charter' ), 'primary' );
+		$this->renderContainmentForm( 'all', 0, '', EmergencyContainment::ISSUANCE_PAUSED, __( 'Pause issuance on all enabled issuers', 'charter' ), __( 'Pause credential issuance independently on every enabled site issuer.', 'charter' ), 'secondary' );
+		$this->renderContainmentForm( 'all', 0, '', EmergencyContainment::LOCKDOWN, __( 'Lock down all enabled issuers', 'charter' ), __( 'Reject Charter Bearer access and pause issuance independently on every enabled site issuer.', 'charter' ), 'delete' );
+	}
+
+	/**
+	 * Renders emergency controls for one exact selected issuer.
+	 *
+	 * @param int    $siteId Selected WordPress site identifier.
+	 * @param string $issuer Exact selected issuer.
+	 */
+	private function renderSelectedContainmentControls( int $siteId, string $issuer ): void {
+		?>
+		<h3><?php esc_html_e( 'Selected-site emergency containment', 'charter' ); ?></h3>
+		<p><?php esc_html_e( 'Containment is reversible and never deletes clients, consents, grants, or credentials. Permanent revoke-all remains a separate action below.', 'charter' ); ?></p>
+		<?php
+		$this->renderContainmentForm( 'site', $siteId, $issuer, EmergencyContainment::RESUMED, __( 'Resume selected issuer', 'charter' ), __( 'Resume issuance and Charter Bearer access for only this exact issuer.', 'charter' ), 'primary' );
+		$this->renderContainmentForm( 'site', $siteId, $issuer, EmergencyContainment::ISSUANCE_PAUSED, __( 'Pause selected issuer', 'charter' ), __( 'Pause issuance for only this exact issuer while existing access tokens remain usable.', 'charter' ), 'secondary' );
+		$this->renderContainmentForm( 'site', $siteId, $issuer, EmergencyContainment::LOCKDOWN, __( 'Lock down selected issuer', 'charter' ), __( 'Pause issuance and reject Charter Bearer access for only this exact issuer.', 'charter' ), 'delete' );
+	}
+
+	/**
+	 * Renders one exact scope-and-mode-bound Network Admin action.
+	 *
+	 * @param string $scope Exact site or all-sites scope.
+	 * @param int    $siteId Selected site identifier, or zero for all.
+	 * @param string $issuer Exact selected issuer, or empty for all.
+	 * @param string $mode Target containment mode.
+	 * @param string $label Submit button label.
+	 * @param string $confirmation Explicit confirmation statement.
+	 * @param string $buttonClass WordPress button class.
+	 */
+	private function renderContainmentForm( string $scope, int $siteId, string $issuer, string $mode, string $label, string $confirmation, string $buttonClass ): void {
+		?>
+		<form method="post" action="<?php echo esc_url( $this->actionUrl( self::CONTAINMENT_ACTION ) ); ?>" style="margin: 0 0 1em">
+			<input type="hidden" name="scope" value="<?php echo esc_attr( $scope ); ?>">
+			<input type="hidden" name="mode" value="<?php echo esc_attr( $mode ); ?>">
+			<input type="hidden" name="site_id" value="<?php echo esc_attr( (string) $siteId ); ?>">
+			<input type="hidden" name="issuer" value="<?php echo esc_attr( $issuer ); ?>">
+			<?php wp_nonce_field( self::containmentNonceAction( $scope, $mode, $siteId, $issuer ) ); ?>
+			<label><input type="checkbox" name="confirm_action" value="1" required> <?php echo esc_html( $confirmation ); ?></label>
+			<?php submit_button( $label, $buttonClass, 'submit', false ); ?>
+		</form>
 		<?php
 	}
 
@@ -404,16 +508,32 @@ final class NetworkAdminPage {
 
 	/** Renders a whitelisted post-action result notice. */
 	private function renderUpdatedNotice(): void {
-		$message = match ( self::getScalar( 'updated' ) ) {
+		$updated = self::getScalar( 'updated' );
+		$message = match ( $updated ) {
 			'prepared'     => __( 'The selected site was prepared inside its own OAuth boundary.', 'charter' ),
 			'enabled'      => __( 'The selected site issuer was enabled.', 'charter' ),
 			'grant_revoked' => __( 'The selected site authorization was revoked.', 'charter' ),
 			'site_revoked' => __( 'All active OAuth grants for the selected site were revoked.', 'charter' ),
+			'containment'   => __( 'The selected site containment mode was changed.', 'charter' ),
+			'containment_pending' => __( 'The selected site containment mode is active, but its audit record is pending reconciliation.', 'charter' ),
+			'containment_all' => sprintf(
+				/* translators: 1: Changed sites, 2: Unchanged sites, 3: Skipped sites, 4: Audit-pending sites, 5: Failed sites. */
+				__( 'Network containment finished sequentially: %1$d changed, %2$d already in that mode, %3$d without an enabled issuer skipped, %4$d active with audit pending, %5$d failed.', 'charter' ),
+				absint( self::getScalar( 'changed' ) ),
+				absint( self::getScalar( 'unchanged' ) ),
+				absint( self::getScalar( 'skipped' ) ),
+				absint( self::getScalar( 'pending' ) ),
+				absint( self::getScalar( 'failed' ) )
+			),
 			default         => '',
 		};
 		if ( '' !== $message ) {
+			$noticeClass = in_array( $updated, array( 'containment_pending', 'containment_all' ), true )
+				&& ( 'containment_pending' === $updated || 0 < absint( self::getScalar( 'pending' ) ) || 0 < absint( self::getScalar( 'failed' ) ) )
+				? 'notice-warning'
+				: 'notice-success';
 			?>
-			<div class="notice notice-success is-dismissible"><p><?php echo esc_html( $message ); ?></p></div>
+			<div class="notice <?php echo esc_attr( $noticeClass ); ?> is-dismissible"><p><?php echo esc_html( $message ); ?></p></div>
 			<?php
 		}
 	}
@@ -461,6 +581,18 @@ final class NetworkAdminPage {
 	 */
 	private static function nonceAction( string $action, string ...$bindings ): string {
 		return $action . ':' . hash( 'sha256', implode( "\0", $bindings ) );
+	}
+
+	/**
+	 * Returns an action nonce bound to network, scope, site, issuer, and mode.
+	 *
+	 * @param string $scope Exact site or all-sites scope.
+	 * @param string $mode Target containment mode.
+	 * @param int    $siteId Selected site identifier, or zero for all.
+	 * @param string $issuer Exact selected issuer, or empty for all.
+	 */
+	private static function containmentNonceAction( string $scope, string $mode, int $siteId, string $issuer ): string {
+		return self::nonceAction( self::CONTAINMENT_ACTION, (string) get_current_network_id(), $scope, (string) $siteId, $issuer, $mode );
 	}
 
 	/**

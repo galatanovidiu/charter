@@ -58,3 +58,19 @@ if ( false === $charterHttpUser ) {
 
 wp_set_password( 'charter-http-password', $charterHttpUser->ID );
 ( new WP_User( $charterHttpUser->ID ) )->set_role( 'subscriber' );
+
+$charterHttpAdmin = get_user_by( 'login', 'charter-oauth-admin' );
+if ( false === $charterHttpAdmin ) {
+	$charterHttpAdminId = wp_create_user( 'charter-oauth-admin', 'charter-http-admin-password', 'charter-oauth-admin@example.test' );
+	if ( is_wp_error( $charterHttpAdminId ) ) {
+		throw new RuntimeException( 'The focused HTTP administrator could not be created.' );
+	}
+	$charterHttpAdmin = get_userdata( $charterHttpAdminId );
+}
+
+if ( false === $charterHttpAdmin ) {
+	throw new RuntimeException( 'The focused HTTP administrator could not be loaded.' );
+}
+
+wp_set_password( 'charter-http-admin-password', $charterHttpAdmin->ID );
+( new WP_User( $charterHttpAdmin->ID ) )->set_role( 'administrator' );

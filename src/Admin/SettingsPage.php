@@ -14,6 +14,7 @@ use GalatanOvidiu\Charter\OAuth\ClientGovernance;
 use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
+use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
 use GalatanOvidiu\Charter\Security\AuditLog;
@@ -28,17 +29,20 @@ use RuntimeException;
  */
 final class SettingsPage {
 
+	private const CONTAINMENT_ACTION = 'charter_oauth_set_emergency_mode';
+
 	/**
 	 * Creates the settings screen.
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SiteState        $siteState Site lifecycle and identity.
-	 * @param ClientRegistry   $clients   Client registry.
-	 * @param CredentialStore  $credentials Grant persistence.
-	 * @param ClientGovernance $governance Administrator governance.
-	 * @param GrantGovernance  $grantGovernance Administrator grant governance.
-	 * @param AuditLog         $audit Security event ledger.
+	 * @param SiteState            $siteState Site lifecycle and identity.
+	 * @param ClientRegistry       $clients   Client registry.
+	 * @param CredentialStore      $credentials Grant persistence.
+	 * @param ClientGovernance     $governance Administrator governance.
+	 * @param GrantGovernance      $grantGovernance Administrator grant governance.
+	 * @param AuditLog             $audit Security event ledger.
+	 * @param EmergencyContainment $containment Issuer-local emergency mode.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
@@ -46,7 +50,8 @@ final class SettingsPage {
 		private readonly CredentialStore $credentials,
 		private readonly ClientGovernance $governance,
 		private readonly GrantGovernance $grantGovernance,
-		private readonly AuditLog $audit
+		private readonly AuditLog $audit,
+		private readonly EmergencyContainment $containment
 	) {
 	}
 
@@ -64,6 +69,8 @@ final class SettingsPage {
 		add_action( 'admin_post_charter_oauth_delete_client', array( $this, 'deleteClient' ) );
 		add_action( 'admin_post_charter_oauth_revoke_site_grant', array( $this, 'revokeGrant' ) );
 		add_action( 'admin_post_charter_oauth_revoke_all_site_grants', array( $this, 'revokeAllGrants' ) );
+		add_action( 'admin_post_' . self::CONTAINMENT_ACTION, array( $this, 'setContainmentMode' ) );
+		add_action( 'admin_notices', array( $this, 'renderLockdownNotice' ) );
 	}
 
 	/**
@@ -100,6 +107,9 @@ final class SettingsPage {
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Charter OAuth', 'charter' ); ?></h1>
+			<?php if ( 'pending' === self::getScalar( 'containment_audit' ) ) : ?>
+				<div class="notice notice-warning"><p><?php esc_html_e( 'The requested OAuth emergency mode is active, but its audit event is pending reconciliation. Retry the same mode after restoring the audit ledger.', 'charter' ); ?></p></div>
+			<?php endif; ?>
 			<p><?php /* translators: %s: Current OAuth lifecycle state. */ echo esc_html( sprintf( __( 'State: %s', 'charter' ), ucfirst( $this->siteState->state() ) ) ); ?></p>
 			<?php if ( null === $identity ) : ?>
 				<div class="notice notice-error"><p><?php esc_html_e( 'The site needs a supported canonical bare-origin public URL before OAuth can be prepared.', 'charter' ); ?></p></div>
@@ -119,6 +129,10 @@ final class SettingsPage {
 						<label><input type="checkbox" name="discovery_verified" value="1" required> <?php esc_html_e( 'I verified both exact metadata URLs from the intended client environment.', 'charter' ); ?></label>
 						<?php submit_button( __( 'Enable OAuth', 'charter' ) ); ?>
 					</form>
+				<?php endif; ?>
+
+				<?php if ( $this->siteState->isEnabled() ) : ?>
+					<?php $this->renderContainmentControls( $identity->issuer() ); ?>
 				<?php endif; ?>
 
 				<h2><?php esc_html_e( 'Dynamic Client Registration', 'charter' ); ?></h2>
@@ -368,6 +382,79 @@ final class SettingsPage {
 		exit;
 	}
 
+	/** Applies one explicitly confirmed exact-issuer emergency transition. */
+	public function setContainmentMode(): never {
+		$this->requireAdministrator();
+		$identity = $this->requireIdentity();
+		$mode     = self::postScalar( 'mode' );
+		check_admin_referer( self::containmentNonceAction( $identity->issuer(), $mode ) );
+
+		if (
+			'1' !== self::postScalar( 'confirm_action' )
+			|| ! $this->containment->transition( $mode, EmergencyContainment::ACTOR_SITE_ADMIN, get_current_user_id(), time(), $identity->issuer() )
+		) {
+			wp_die( esc_html__( 'The OAuth emergency mode could not be changed.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		$redirect = $this->settingsUrl();
+		if ( $this->containment->snapshot()['audit_pending'] ) {
+			$redirect = add_query_arg( 'containment_audit', 'pending', $redirect );
+		}
+		wp_safe_redirect( $redirect );
+		exit;
+	}
+
+	/** Shows a persistent warning throughout Site Admin while lockdown is active. */
+	public function renderLockdownNotice(): void {
+		if ( ! current_user_can( 'manage_options' ) || ! $this->siteState->isEnabled() || EmergencyContainment::LOCKDOWN !== $this->containment->mode() ) {
+			return;
+		}
+		?>
+		<div class="notice notice-error"><p><?php esc_html_e( 'Charter OAuth lockdown is active: credential issuance and every Charter Bearer request are blocked until an administrator explicitly resumes operation.', 'charter' ); ?></p></div>
+		<?php
+	}
+
+	/**
+	 * Renders exact current mode and separate reversible emergency actions.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 */
+	private function renderContainmentControls( string $issuer ): void {
+		$snapshot  = $this->containment->snapshot();
+		$changedAt = is_int( $snapshot['changed_at'] ) ? $this->formatTimestamp( $snapshot['changed_at'] ) : __( 'Never changed', 'charter' );
+		$actor     = '' === $snapshot['actor'] ? __( 'Default', 'charter' ) : $snapshot['actor'];
+		$audit     = $snapshot['audit_pending'] ? __( 'Pending reconciliation', 'charter' ) : __( 'Recorded', 'charter' );
+		?>
+		<h2><?php esc_html_e( 'Emergency containment', 'charter' ); ?></h2>
+		<p><?php /* translators: 1: Current emergency mode, 2: Last mode transition time, 3: Stable actor channel, 4: Audit state. */ echo esc_html( sprintf( __( 'Mode: %1$s. Last change: %2$s. Actor: %3$s. Audit: %4$s.', 'charter' ), $snapshot['mode'], $changedAt, $actor, $audit ) ); ?></p>
+		<p><?php esc_html_e( 'Pause issuance keeps existing access tokens usable. Lockdown also rejects every Charter Bearer token. Neither action deletes clients, consents, grants, or credentials, and revocation remains separately available below.', 'charter' ); ?></p>
+		<?php
+		$this->renderContainmentForm( $issuer, EmergencyContainment::RESUMED, __( 'Resume OAuth', 'charter' ), __( 'Resume registration, authorization, exchange, refresh, and Charter Bearer access.', 'charter' ), 'primary' );
+		$this->renderContainmentForm( $issuer, EmergencyContainment::ISSUANCE_PAUSED, __( 'Pause issuance', 'charter' ), __( 'Stop new registrations, authorizations, code exchanges, and refreshes while existing access tokens remain usable.', 'charter' ), 'secondary' );
+		$this->renderContainmentForm( $issuer, EmergencyContainment::LOCKDOWN, __( 'Start OAuth lockdown', 'charter' ), __( 'Pause issuance and reject every Charter Bearer token immediately.', 'charter' ), 'delete' );
+	}
+
+	/**
+	 * Renders one exact-issuer-and-mode-bound confirmation form.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param string $mode Target containment mode.
+	 * @param string $label Submit button label.
+	 * @param string $confirmation Explicit confirmation statement.
+	 * @param string $buttonClass WordPress button class.
+	 */
+	private function renderContainmentForm( string $issuer, string $mode, string $label, string $confirmation, string $buttonClass ): void {
+		?>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0 0 1em">
+			<input type="hidden" name="action" value="<?php echo esc_attr( self::CONTAINMENT_ACTION ); ?>">
+			<input type="hidden" name="mode" value="<?php echo esc_attr( $mode ); ?>">
+			<?php wp_nonce_field( self::containmentNonceAction( $issuer, $mode ) ); ?>
+			<label><input type="checkbox" name="confirm_action" value="1" required> <?php echo esc_html( $confirmation ); ?></label>
+			<?php submit_button( $label, $buttonClass, 'submit', false ); ?>
+		</form>
+		<?php
+	}
+
 	/**
 	 * Applies one nonce-protected administrator client action.
 	 *
@@ -561,6 +648,16 @@ final class SettingsPage {
 		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Each action verifies its form nonce before using security-sensitive values.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
+	}
+
+	/**
+	 * Returns the nonce action bound to the exact issuer and target mode.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param string $mode Target containment mode.
+	 */
+	private static function containmentNonceAction( string $issuer, string $mode ): string {
+		return self::CONTAINMENT_ACTION . ':' . hash( 'sha256', $issuer . "\0" . $mode );
 	}
 
 	/**

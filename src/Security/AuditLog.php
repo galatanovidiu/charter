@@ -20,7 +20,7 @@ use RuntimeException;
  *
  * @since 0.1.0
  */
-final class AuditLog {
+final class AuditLog implements AuditWriter {
 
 	/**
 	 * Owned non-reconnecting transaction service.
@@ -89,6 +89,41 @@ final class AuditLog {
 				new AuditEvent( $issuer, $occurredAt, $eventType, $actorUserId, $representedUserId, $clientId, $outcome, $reason, $sourceAddress, $resourceIdentifier, $scopes )
 			); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Fixed Charter-prefixed extension action.
 		}
+	}
+
+	/**
+	 * Reports whether one exact stable event is already durable.
+	 *
+	 * @param string   $issuer Exact issuer.
+	 * @param int      $timestamp Exact event timestamp.
+	 * @param string   $eventType Stable event type.
+	 * @param string   $outcome Stable outcome.
+	 * @param string   $reason Stable reason.
+	 * @param int|null $actorUserId Acting WordPress user.
+	 */
+	public function hasEvent( string $issuer, int $timestamp, string $eventType, string $outcome, string $reason, ?int $actorUserId ): bool {
+		if ( '' === $issuer || $timestamp <= 0 ) {
+			return false;
+		}
+
+		return $this->transactions->run(
+			static function ( mysqli $database ) use ( $issuer, $timestamp, $eventType, $outcome, $reason, $actorUserId ): bool {
+				$table  = self::quotedTable( Schema::auditTable() );
+				$result = $database->execute_query(
+					"SELECT 1 FROM {$table}
+					WHERE issuer_digest = ? AND issuer = ? AND occurred_at = ? AND event_type = ? AND outcome = ? AND reason = ? AND actor_user_id <=> ?
+					LIMIT 1",
+					array( self::issuerDigest( $issuer ), $issuer, $timestamp, $eventType, $outcome, $reason, $actorUserId )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Exact audit reconciliation uses an owned connection and a trusted table.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+				$exists = is_array( $result->fetch_row() );
+				$result->free();
+
+				return $exists;
+			}
+		);
 	}
 
 	/**
