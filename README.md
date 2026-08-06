@@ -76,6 +76,7 @@ Run the fast local checks:
 ```bash
 composer check
 npm run format:check
+npm run test:javascript
 ```
 
 Run WordPress integration tests:

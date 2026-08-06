@@ -12,6 +12,7 @@
 		"env:start": "wp-env start --auto-port",
 		"env:stop": "wp-env stop",
 		"env:clean": "wp-env cleanup",
+		"test:javascript": "node --test tests/JavaScript/*.test.mjs",
 		"test:integration:start": "wp-env start --config=.wp-env.test.json --auto-port",
 		"test:integration": "wp-env run cli --config=.wp-env.test.json --env-cwd=wp-content/plugins/charter php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=integration",
 		"test:integration:logs": "wp-env logs --config=.wp-env.test.json --no-watch",
@@ -47,8 +48,8 @@
 		"artifact:test": "bash tools/test-archive.sh",
 		"secret:check": "bash tools/check-secret-safety.sh",
 		"audit": "npm audit --audit-level=high",
-		"format": "prettier --no-error-on-unmatched-pattern --write \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
-		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""
+		"format": "prettier --no-error-on-unmatched-pattern --write \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
+		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""
 	},
 	"devDependencies": {
 		"@wordpress/env": "^11.12.0",

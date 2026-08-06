@@ -80,6 +80,7 @@ jobs:
               run: |
                   composer check
                   npm run format:check
+                  npm run test:javascript
                   npm run audit
 
             - name: Resolve the latest WordPress 6.9 patch

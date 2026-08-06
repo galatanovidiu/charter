@@ -96,3 +96,6 @@ jobs:
 
             - name: Check repository formatting
               run: npm run format:check
+
+            - name: Run browser behavior tests
+              run: npm run test:javascript

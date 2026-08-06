@@ -313,6 +313,13 @@ charter_http_status="$(curl --silent --show-error \
 	"${charter_http_authorization_url}")"
 assert_status 200 "${charter_http_status}" 'OAuth consent'
 
+if ! grep -q 'data-charter-oauth-consent' "${charter_http_tmp}/consent.html" \
+	|| ! grep -q 'data-charter-oauth-status' "${charter_http_tmp}/consent.html" \
+	|| ! grep -q '/assets/js/oauth-consent.js' "${charter_http_tmp}/consent.html"; then
+	echo 'OAuth consent did not include the one-submit progress behavior.' >&2
+	exit 1
+fi
+
 charter_http_transaction="$(html_field "${charter_http_tmp}/consent.html" transaction)"
 charter_http_nonce="$(html_field "${charter_http_tmp}/consent.html" _wpnonce)"
 charter_http_status="$(curl --silent --show-error \

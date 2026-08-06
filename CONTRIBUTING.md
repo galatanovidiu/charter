@@ -24,6 +24,7 @@ Check repository formatting:
 ```bash
 npm run audit
 npm run format:check
+npm run test:javascript
 ```
 
 The Composer check validates locked metadata and advisories, runs the complete PHPCS standard, performs static analysis, and runs pure unit tests.

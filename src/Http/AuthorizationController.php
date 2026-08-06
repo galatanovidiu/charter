@@ -148,11 +148,12 @@ final class AuthorizationController {
 		$redirectHost    = is_string( $redirectHost ) ? $redirectHost : $request->redirectUri();
 		$nonce           = wp_nonce_field( 'charter_oauth_consent:' . $transaction, '_wpnonce', true, false );
 		$scopeHtml       = self::scopeConsentHtml( $request );
+		$scriptHtml      = self::consentScriptHtml();
 		$loopbackWarning = self::hasOnlyLoopbackRedirects( $request )
 			? '<p><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
 			: '';
 		$html            = sprintf(
-			'<h1>%1$s</h1><p><strong>%2$s</strong> %3$s</p><dl><dt>%4$s</dt><dd>%5$s</dd><dt>%6$s</dt><dd>%7$s</dd><dt>%8$s</dt><dd>%9$s</dd><dt>%10$s</dt><dd>%11$s</dd></dl><p>%12$s</p>%13$s<form method="post" action="%14$s">%15$s<input type="hidden" name="transaction" value="%16$s"><p><button type="submit" name="decision" value="approve" class="button button-primary">%17$s</button> <button type="submit" name="decision" value="deny" class="button">%18$s</button></p></form>',
+			'<h1>%1$s</h1><p><strong>%2$s</strong> %3$s</p><dl><dt>%4$s</dt><dd>%5$s</dd><dt>%6$s</dt><dd>%7$s</dd><dt>%8$s</dt><dd>%9$s</dd><dt>%10$s</dt><dd>%11$s</dd></dl><p>%12$s</p>%13$s<form method="post" action="%14$s" data-charter-oauth-consent>%15$s<input type="hidden" name="transaction" value="%16$s"><p><button type="submit" name="decision" value="approve" class="button button-primary">%17$s</button> <button type="submit" name="decision" value="deny" class="button">%18$s</button></p><p data-charter-oauth-status role="status" aria-live="polite" hidden>%19$s</p></form>%20$s',
 			esc_html__( 'Authorize WordPress access', 'charter' ),
 			esc_html( $request->client()->name() ),
 			esc_html__( 'is requesting delegated access.', 'charter' ),
@@ -172,11 +173,37 @@ final class AuthorizationController {
 			$nonce,
 			esc_attr( $transaction ),
 			esc_html__( 'Approve', 'charter' ),
-			esc_html__( 'Deny', 'charter' )
+			esc_html__( 'Deny', 'charter' ),
+			esc_html__( 'Completing authorization…', 'charter' ),
+			$scriptHtml
 		);
 
 		$this->sendHtmlHeaders();
 		wp_die( $html, esc_html__( 'OAuth authorization', 'charter' ), array( 'response' => 200 ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Every dynamic value in the assembled consent HTML is escaped.
+	}
+
+	/**
+	 * Renders the queued consent interaction script for the standalone wp_die document.
+	 *
+	 * @return string WordPress-generated script markup.
+	 */
+	private static function consentScriptHtml(): string {
+		wp_enqueue_script(
+			'charter-oauth-consent',
+			plugins_url( 'assets/js/oauth-consent.js', CHARTER_FILE ),
+			array(),
+			CHARTER_VERSION,
+			array(
+				'in_footer' => false,
+				'strategy'  => 'defer',
+			)
+		);
+
+		ob_start();
+		wp_print_scripts( 'charter-oauth-consent' );
+		$html = ob_get_clean();
+
+		return is_string( $html ) ? $html : '';
 	}
 
 	/**
