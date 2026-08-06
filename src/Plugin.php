@@ -11,6 +11,8 @@ namespace GalatanOvidiu\Charter;
 
 use GalatanOvidiu\Charter\Admin\SettingsPage;
 use GalatanOvidiu\Charter\Admin\ConnectedAppsPage;
+use GalatanOvidiu\Charter\Admin\NetworkAdminPage;
+use GalatanOvidiu\Charter\Admin\NetworkSiteControl;
 use GalatanOvidiu\Charter\Http\AuthorizationController;
 use GalatanOvidiu\Charter\Http\BoundedDirectJsonFetcher;
 use GalatanOvidiu\Charter\Http\CorsPolicy;
@@ -35,6 +37,7 @@ use GalatanOvidiu\Charter\Security\AuditLog;
 use GalatanOvidiu\Charter\Security\BoundedHostResolver;
 use GalatanOvidiu\Charter\Security\RateLimiter;
 use GalatanOvidiu\Charter\Site\SiteState;
+use GalatanOvidiu\Charter\Site\NetworkActivation;
 
 /**
  * Coordinates Charter's feature modules.
@@ -311,13 +314,7 @@ final class Plugin {
 	 * @since 0.1.0
 	 */
 	public function ensureCurrentSiteReady(): void {
-		$isNetworkActive = false;
-		if ( is_multisite() ) {
-			$networkPlugins  = get_site_option( 'active_sitewide_plugins', array() );
-			$isNetworkActive = is_array( $networkPlugins ) && isset( $networkPlugins[ plugin_basename( CHARTER_FILE ) ] );
-		}
-
-		if ( SiteState::AVAILABLE === $this->siteState->state() && $isNetworkActive ) {
+		if ( SiteState::AVAILABLE === $this->siteState->state() && NetworkActivation::isActive() ) {
 			return;
 		}
 
@@ -343,6 +340,7 @@ final class Plugin {
 		$authorization = new AuthorizationController( $this->siteState, $this->authorization );
 		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit );
 		$connectedApps = new ConnectedAppsPage( $this->siteState, $this->clients, $this->credentials );
+		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit ) );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );
 		$cors          = new CorsPolicy();
 		$cleanup       = new ClientCleanup( $this->siteState, $this->clients, $this->clientGovernance, $this->audit );
@@ -357,6 +355,7 @@ final class Plugin {
 		add_action( 'admin_post_nopriv_charter_oauth_authorize', array( $authorization, 'handleLoggedOut' ) );
 		$settings->registerHooks();
 		$connectedApps->registerHooks();
+		$networkAdmin->registerHooks();
 		$userEvents->registerHooks();
 		$cors->registerHooks();
 		$cleanup->registerHooks();

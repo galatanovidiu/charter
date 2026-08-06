@@ -22,6 +22,18 @@ final class Schema {
 	private const VERSION        = '5';
 
 	/**
+	 * Reports whether the current site's expected schema version is installed.
+	 *
+	 * This check is read-only so Network Admin inspection never initializes an
+	 * unselected Available site.
+	 *
+	 * @since 0.1.0
+	 */
+	public static function isInstalled(): bool {
+		return self::VERSION === get_option( self::VERSION_OPTION );
+	}
+
+	/**
 	 * Installs the schema only when the current version is absent.
 	 *
 	 * @since 0.1.0
@@ -29,7 +41,7 @@ final class Schema {
 	 * @return bool Whether installation ran for this request.
 	 */
 	public static function maybeInstall(): bool {
-		if ( self::VERSION === get_option( self::VERSION_OPTION ) ) {
+		if ( self::isInstalled() ) {
 			return false;
 		}
 

@@ -25,6 +25,8 @@ final class ConnectedAppsPage {
 	private const NOTICE_REASONS       = array(
 		'administrator_grant_revocation',
 		'administrator_site_revocation',
+		'network_administrator_grant_revocation',
+		'network_administrator_site_revocation',
 		'administrator_client_block',
 		'administrator_client_delete',
 		'authorization_code_replay',
@@ -192,7 +194,7 @@ final class ConnectedAppsPage {
 		);
 		?>
 		<div class="notice notice-warning is-dismissible"><p>
-			<?php echo esc_html( _n( 'One OAuth authorization was revoked for security or by a site administrator.', 'Multiple OAuth authorizations were revoked for security or by a site administrator.', count( $unseen ), 'charter' ) ); ?>
+			<?php echo esc_html( _n( 'One OAuth authorization was revoked for security or by an administrator.', 'Multiple OAuth authorizations were revoked for security or by an administrator.', count( $unseen ), 'charter' ) ); ?>
 			<a href="<?php echo esc_url( $this->pageUrl() ); ?>"><?php esc_html_e( 'Review disconnected apps and reasons.', 'charter' ); ?></a>
 		</p></div>
 		<?php
@@ -220,6 +222,8 @@ final class ConnectedAppsPage {
 			'rfc7009_revocation'              => __( 'The application disconnected this authorization.', 'charter' ),
 			'administrator_grant_revocation'  => __( 'A site administrator revoked this authorization.', 'charter' ),
 			'administrator_site_revocation'   => __( 'A site administrator revoked all site OAuth access.', 'charter' ),
+			'network_administrator_grant_revocation' => __( 'A network administrator revoked this authorization for this site.', 'charter' ),
+			'network_administrator_site_revocation' => __( 'A network administrator revoked all OAuth access for this site.', 'charter' ),
 			'administrator_client_block'      => __( 'A site administrator blocked this application.', 'charter' ),
 			'administrator_client_delete'     => __( 'A site administrator deleted this application.', 'charter' ),
 			'authorization_code_replay'       => __( 'Charter detected reuse of an authorization code.', 'charter' ),

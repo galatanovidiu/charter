@@ -26,6 +26,7 @@
 		"test:slice0:multisite:logs": "wp-env logs --config=.wp-env.slice0.json --no-watch",
 		"test:slice0:multisite:destroy": "wp-env destroy --config=.wp-env.slice0.json --force",
 		"test:slice0:multisite:ci": "bash tools/run-slice0-multisite-tests.sh",
+		"test:network-admin:http:ci": "bash tools/run-network-admin-http-tests.sh",
 		"test:slice0:rest-auth": "wp-env run cli --config=.wp-env.slice0.json --env-cwd=wp-content/plugins/charter env WP_MULTISITE=1 php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=slice0-rest-auth",
 		"test:slice0:rest-auth:process": "bash tools/run-slice0-rest-authentication.sh process",
 		"test:slice0:rest-auth:http": "bash tools/run-slice0-rest-authentication.sh http",
