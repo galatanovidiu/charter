@@ -31,6 +31,7 @@ use GalatanOvidiu\Charter\OAuth\CredentialHasher;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
+use GalatanOvidiu\Charter\OAuth\RetentionCleanup;
 use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\UserSecurityEvents;
 use GalatanOvidiu\Charter\Rest\BearerAuthenticator;
@@ -155,6 +156,13 @@ final class Plugin {
 	private readonly ClientMetadataSnapshotStore $clientMetadataSnapshots;
 
 	/**
+	 * Issuer-local bounded retention and operational status.
+	 *
+	 * @var ClientCleanup
+	 */
+	private readonly ClientCleanup $cleanup;
+
+	/**
 	 * Request-local integration access registrations.
 	 *
 	 * @var AccessPolicyProvider
@@ -174,6 +182,7 @@ final class Plugin {
 		$this->accessPolicy            = new AccessPolicyProvider();
 		$this->audit                   = new AuditLog();
 		$this->rateLimiter             = new RateLimiter();
+		$this->cleanup                 = new ClientCleanup( $this->siteState, new RetentionCleanup(), $this->audit );
 		$this->clientGovernance        = new ClientGovernance( $this->clients, $this->credentials, $this->audit, $this->clientMetadataSnapshots );
 		$this->grantGovernance         = new GrantGovernance( $this->credentials, $this->audit );
 		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
@@ -320,6 +329,11 @@ final class Plugin {
 		return $this->rateLimiter;
 	}
 
+	/** Returns issuer-local retention maintenance for operations and tests. */
+	public function cleanup(): ClientCleanup {
+		return $this->cleanup;
+	}
+
 	/**
 	 * Prepares an existing active single site after a plugin-code upgrade.
 	 *
@@ -357,7 +371,6 @@ final class Plugin {
 		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit ) );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );
 		$cors          = new CorsPolicy();
-		$cleanup       = new ClientCleanup( $this->siteState, $this->clients, $this->clientGovernance, $this->audit );
 
 		add_action( 'init', array( $metadata, 'registerRewriteRules' ), 1 );
 		add_action( 'init', array( $this, 'ensureCurrentSiteReady' ), 2 );
@@ -372,7 +385,7 @@ final class Plugin {
 		$networkAdmin->registerHooks();
 		$userEvents->registerHooks();
 		$cors->registerHooks();
-		$cleanup->registerHooks();
+		$this->cleanup->registerHooks();
 		$this->bearerAuthenticator->registerHooks();
 	}
 }

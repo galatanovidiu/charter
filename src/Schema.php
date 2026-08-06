@@ -19,7 +19,7 @@ use RuntimeException;
 final class Schema {
 
 	private const VERSION_OPTION = 'charter_oauth_schema_version';
-	private const VERSION        = '6';
+	private const VERSION        = '7';
 
 	/**
 	 * Reports whether the current site's expected schema version is installed.
@@ -90,7 +90,8 @@ final class Schema {
 			PRIMARY KEY  (id),
 			UNIQUE KEY credential (credential_type,digest),
 			KEY grant_credentials (grant_id,credential_type,consumed_at,expires_at),
-			KEY refresh_lineage (parent_id)
+			KEY refresh_lineage (parent_id),
+			KEY retention (credential_type,expires_at,consumed_at,created_at)
 		) ENGINE=InnoDB {$collation};
 		CREATE TABLE {$grant_table} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -112,7 +113,8 @@ final class Schema {
 			revocation_reason varchar(64) NULL,
 			PRIMARY KEY  (id),
 			KEY user_status (user_id,status),
-			KEY client_status (client_digest,status)
+			KEY client_status (client_digest,status),
+			KEY retention (status,revoked_at,refresh_absolute_expires_at,refresh_inactivity_expires_at)
 		) ENGINE=InnoDB {$collation};
 		CREATE TABLE {$client_table} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
