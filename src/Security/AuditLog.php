@@ -50,9 +50,11 @@ final class AuditLog {
 	 * @param string|null $clientId Exact client identifier.
 	 * @param string|null $sourceAddress Normalized source when security-relevant.
 	 * @param int|null    $timestamp Event timestamp.
+	 * @param string|null $resourceIdentifier Exact protected resource when applicable.
+	 * @param string|null $scopes Canonical scope set when applicable.
 	 * @throws RuntimeException When the event or persistence is invalid.
 	 */
-	public function record( string $issuer, string $eventType, string $outcome, string $reason, ?int $actorUserId = null, ?int $representedUserId = null, ?string $clientId = null, ?string $sourceAddress = null, ?int $timestamp = null ): void {
+	public function record( string $issuer, string $eventType, string $outcome, string $reason, ?int $actorUserId = null, ?int $representedUserId = null, ?string $clientId = null, ?string $sourceAddress = null, ?int $timestamp = null, ?string $resourceIdentifier = null, ?string $scopes = null ): void {
 		if (
 			'' === $issuer
 			|| 1 !== preg_match( '/^[a-z0-9_]{1,64}$/D', $eventType )
@@ -60,23 +62,33 @@ final class AuditLog {
 			|| 1 !== preg_match( '/^[a-z0-9_]{1,64}$/D', $reason )
 			|| ( is_string( $clientId ) && 2048 < strlen( $clientId ) )
 			|| ( is_string( $sourceAddress ) && 64 < strlen( $sourceAddress ) )
+			|| ( is_string( $resourceIdentifier ) && 2048 < strlen( $resourceIdentifier ) )
+			|| ( is_string( $scopes ) && 2048 < strlen( $scopes ) )
 		) {
 			throw new RuntimeException( 'charter_audit_event_invalid' );
 		}
+		$occurredAt = $timestamp ?? time();
 
 		$this->transactions->run(
-			static function ( mysqli $database ) use ( $issuer, $eventType, $outcome, $reason, $actorUserId, $representedUserId, $clientId, $sourceAddress, $timestamp ): void {
+			static function ( mysqli $database ) use ( $issuer, $eventType, $outcome, $reason, $actorUserId, $representedUserId, $clientId, $sourceAddress, $occurredAt, $resourceIdentifier, $scopes ): void {
 				$table  = self::quotedTable( Schema::auditTable() );
 				$result = $database->execute_query(
-					"INSERT INTO {$table} (occurred_at,issuer_digest,issuer,event_type,actor_user_id,represented_user_id,client_id,outcome,reason,source_address)
-					VALUES (?,?,?,?,?,?,?,?,?,?)",
-					array( $timestamp ?? time(), self::issuerDigest( $issuer ), $issuer, $eventType, $actorUserId, $representedUserId, $clientId, $outcome, $reason, $sourceAddress )
+					"INSERT INTO {$table} (occurred_at,issuer_digest,issuer,event_type,actor_user_id,represented_user_id,client_id,resource,scopes,outcome,reason,source_address)
+					VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+					array( $occurredAt, self::issuerDigest( $issuer ), $issuer, $eventType, $actorUserId, $representedUserId, $clientId, $resourceIdentifier, $scopes, $outcome, $reason, $sourceAddress )
 				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Security ledger uses an owned connection and validated non-secret fields.
 				if ( true !== $result || 1 !== $database->affected_rows ) {
 					throw new RuntimeException( 'charter_audit_event_failed' );
 				}
 			}
 		);
+
+		if ( function_exists( 'do_action' ) ) {
+			do_action(
+				'charter_oauth_audit_event_recorded',
+				new AuditEvent( $issuer, $occurredAt, $eventType, $actorUserId, $representedUserId, $clientId, $outcome, $reason, $sourceAddress, $resourceIdentifier, $scopes )
+			); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Fixed Charter-prefixed extension action.
+		}
 	}
 
 	/**
@@ -92,7 +104,7 @@ final class AuditLog {
 			static function ( mysqli $database ) use ( $issuer, $limit ): array {
 				$table  = self::quotedTable( Schema::auditTable() );
 				$result = $database->execute_query(
-					"SELECT occurred_at,event_type,actor_user_id,represented_user_id,client_id,outcome,reason,source_address
+					"SELECT occurred_at,event_type,actor_user_id,represented_user_id,client_id,resource,scopes,outcome,reason,source_address
 					FROM {$table} WHERE issuer_digest = ? AND issuer = ? ORDER BY occurred_at DESC, id DESC LIMIT ?",
 					array( self::issuerDigest( $issuer ), $issuer, $limit )
 				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Administrator event reads use an owned connection.
@@ -111,6 +123,7 @@ final class AuditLog {
 						continue;
 					}
 					$events[] = new AuditEvent(
+						$issuer,
 						$occurredAt,
 						$row['event_type'],
 						self::nullableIntegerValue( $row['actor_user_id'] ?? null ),
@@ -118,7 +131,9 @@ final class AuditLog {
 						is_string( $row['client_id'] ?? null ) ? $row['client_id'] : null,
 						$row['outcome'],
 						$row['reason'],
-						is_string( $row['source_address'] ?? null ) ? $row['source_address'] : null
+						is_string( $row['source_address'] ?? null ) ? $row['source_address'] : null,
+						is_string( $row['resource'] ?? null ) ? $row['resource'] : null,
+						is_string( $row['scopes'] ?? null ) ? $row['scopes'] : null
 					);
 				}
 				$result->free();

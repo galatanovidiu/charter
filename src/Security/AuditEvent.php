@@ -19,6 +19,7 @@ final class AuditEvent {
 	/**
 	 * Creates one non-secret event projection.
 	 *
+	 * @param string      $issuer Exact site issuer.
 	 * @param int         $occurredAt Event timestamp.
 	 * @param string      $eventType Stable event type.
 	 * @param int|null    $actorUserId Acting user.
@@ -27,8 +28,11 @@ final class AuditEvent {
 	 * @param string      $outcome Stable outcome.
 	 * @param string      $reason Stable reason.
 	 * @param string|null $sourceAddress Normalized source.
+	 * @param string|null $resourceIdentifier Exact protected resource when applicable.
+	 * @param string|null $scopes Canonical scope set when applicable.
 	 */
 	public function __construct(
+		private readonly string $issuer,
 		private readonly int $occurredAt,
 		private readonly string $eventType,
 		private readonly ?int $actorUserId,
@@ -36,8 +40,15 @@ final class AuditEvent {
 		private readonly ?string $clientId,
 		private readonly string $outcome,
 		private readonly string $reason,
-		private readonly ?string $sourceAddress
+		private readonly ?string $sourceAddress,
+		private readonly ?string $resourceIdentifier = null,
+		private readonly ?string $scopes = null
 	) {
+	}
+
+	/** Returns the exact site issuer. */
+	public function issuer(): string {
+		return $this->issuer;
 	}
 
 	/** Returns the event timestamp. */
@@ -78,5 +89,15 @@ final class AuditEvent {
 	/** Returns the normalized source when security-relevant. */
 	public function sourceAddress(): ?string {
 		return $this->sourceAddress;
+	}
+
+	/** Returns the exact protected resource when applicable. */
+	public function resource(): ?string {
+		return $this->resourceIdentifier;
+	}
+
+	/** Returns the canonical scope set when applicable. */
+	public function scopes(): ?string {
+		return $this->scopes;
 	}
 }

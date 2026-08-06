@@ -21,20 +21,22 @@ final class GrantRecord {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param int      $id Grant identifier.
-	 * @param string   $issuer Exact issuer.
-	 * @param string   $resourceIdentifier Exact resource.
-	 * @param string   $clientId Exact client identifier.
-	 * @param string   $redirectUri Approved redirect identity.
-	 * @param int      $userId Represented WordPress user.
-	 * @param string   $scope Approved protected-resource scopes.
-	 * @param bool     $continuingAccess Whether refresh access was approved.
-	 * @param string   $status Authoritative lifecycle status.
-	 * @param int      $authorizedAt Initial authorization timestamp.
-	 * @param int      $lastUsedAt Most recent credential issuance or refresh.
-	 * @param int|null $refreshAbsoluteExpiresAt Absolute refresh-family expiry.
-	 * @param int|null $refreshInactivityExpiresAt Refresh-family inactivity expiry.
-	 * @param string   $clientMetadataFingerprint Approved client metadata binding.
+	 * @param int         $id Grant identifier.
+	 * @param string      $issuer Exact issuer.
+	 * @param string      $resourceIdentifier Exact resource.
+	 * @param string      $clientId Exact client identifier.
+	 * @param string      $redirectUri Approved redirect identity.
+	 * @param int         $userId Represented WordPress user.
+	 * @param string      $scope Approved protected-resource scopes.
+	 * @param bool        $continuingAccess Whether refresh access was approved.
+	 * @param string      $status Authoritative lifecycle status.
+	 * @param int         $authorizedAt Initial authorization timestamp.
+	 * @param int         $lastUsedAt Most recent credential issuance or refresh.
+	 * @param int|null    $refreshAbsoluteExpiresAt Absolute refresh-family expiry.
+	 * @param int|null    $refreshInactivityExpiresAt Refresh-family inactivity expiry.
+	 * @param string      $clientMetadataFingerprint Approved client metadata binding.
+	 * @param int|null    $revokedAt Terminal transition timestamp.
+	 * @param string|null $revocationReason Stable non-secret terminal reason.
 	 */
 	public function __construct(
 		private readonly int $id,
@@ -50,7 +52,9 @@ final class GrantRecord {
 		private readonly int $lastUsedAt,
 		private readonly ?int $refreshAbsoluteExpiresAt,
 		private readonly ?int $refreshInactivityExpiresAt,
-		private readonly string $clientMetadataFingerprint = ''
+		private readonly string $clientMetadataFingerprint = '',
+		private readonly ?int $revokedAt = null,
+		private readonly ?string $revocationReason = null
 	) {
 	}
 
@@ -165,6 +169,16 @@ final class GrantRecord {
 	/** Returns the client metadata binding approved by the user. */
 	public function clientMetadataFingerprint(): string {
 		return $this->clientMetadataFingerprint;
+	}
+
+	/** Returns the terminal transition timestamp when retained. */
+	public function revokedAt(): ?int {
+		return $this->revokedAt;
+	}
+
+	/** Returns the stable non-secret terminal reason when retained. */
+	public function revocationReason(): ?string {
+		return $this->revocationReason;
 	}
 
 	/**

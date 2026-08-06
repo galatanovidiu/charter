@@ -27,6 +27,7 @@ use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\CredentialHasher;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
+use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\UserSecurityEvents;
 use GalatanOvidiu\Charter\Rest\BearerAuthenticator;
@@ -122,6 +123,13 @@ final class Plugin {
 	private readonly ClientGovernance $clientGovernance;
 
 	/**
+	 * Site grant governance.
+	 *
+	 * @var GrantGovernance
+	 */
+	private readonly GrantGovernance $grantGovernance;
+
+	/**
 	 * Secret-free security ledger.
 	 *
 	 * @var AuditLog
@@ -155,6 +163,7 @@ final class Plugin {
 		$this->audit                   = new AuditLog();
 		$this->rateLimiter             = new RateLimiter();
 		$this->clientGovernance        = new ClientGovernance( $this->clients, $this->credentials, $this->audit, $this->clientMetadataSnapshots );
+		$this->grantGovernance         = new GrantGovernance( $this->credentials, $this->audit );
 		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
 		$clientMetadata                = new ClientMetadataResolver( $this->clients, $this->clientMetadataSnapshots, new BoundedHostResolver(), new BoundedDirectJsonFetcher() );
 		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit );
@@ -275,6 +284,11 @@ final class Plugin {
 		return $this->clientGovernance;
 	}
 
+	/** Returns site-administrator grant governance. */
+	public function grantGovernance(): GrantGovernance {
+		return $this->grantGovernance;
+	}
+
 	/**
 	 * Returns the secret-free event ledger.
 	 */
@@ -327,7 +341,7 @@ final class Plugin {
 		$revocation    = new RevocationController( $this->tokens );
 		$registration  = new RegistrationController( $this->dynamicRegistration );
 		$authorization = new AuthorizationController( $this->siteState, $this->authorization );
-		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->audit );
+		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit );
 		$connectedApps = new ConnectedAppsPage( $this->siteState, $this->clients, $this->credentials );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );
 		$cors          = new CorsPolicy();

@@ -449,6 +449,134 @@ final class CredentialStore {
 	}
 
 	/**
+	 * Counts active authorizations under one exact site issuer.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 */
+	public function countActiveGrantsForIssuer( string $issuer ): int {
+		if ( '' === $issuer ) {
+			return 0;
+		}
+
+		$timestamp = time();
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $timestamp ): int {
+				$table  = self::quotedTable( Schema::grantTable() );
+				$result = $database->execute_query(
+					"SELECT COUNT(*) AS grant_count FROM {$table}
+					WHERE issuer = ? AND status = 'active'
+					AND (continuing_access = 0 OR (refresh_absolute_expires_at > ? AND refresh_inactivity_expires_at > ?))",
+					array( $issuer, $timestamp, $timestamp )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Administrator inventory uses an owned non-reconnecting connection.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+				$row = $result->fetch_assoc();
+				$result->free();
+				$count = is_array( $row ) ? self::integerValue( $row['grant_count'] ?? null ) : null;
+
+				return $count ?? 0;
+			}
+		);
+	}
+
+	/**
+	 * Lists one bounded page of active authorizations for an exact site issuer.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param int    $limit Maximum records in one administrator page.
+	 * @param int    $offset Zero-based page offset.
+	 * @return array<GrantRecord> Authorizations ordered and grouped by user.
+	 */
+	public function listActiveGrantsForIssuer( string $issuer, int $limit = 50, int $offset = 0 ): array {
+		if ( '' === $issuer ) {
+			return array();
+		}
+		$limit     = max( 1, min( 100, $limit ) );
+		$offset    = max( 0, $offset );
+		$timestamp = time();
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $limit, $offset, $timestamp ): array {
+				$table  = self::quotedTable( Schema::grantTable() );
+				$result = $database->execute_query(
+					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint
+					FROM {$table}
+					WHERE issuer = ? AND status = 'active'
+					AND (continuing_access = 0 OR (refresh_absolute_expires_at > ? AND refresh_inactivity_expires_at > ?))
+					ORDER BY user_id ASC, last_used_at DESC, id DESC LIMIT {$limit} OFFSET {$offset}",
+					array( $issuer, $timestamp, $timestamp )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Pagination literals are clamped integers; issuer and timestamps remain bound on the owned connection.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+
+				$grants = array();
+				while ( true ) {
+					$row = $result->fetch_assoc();
+					if ( ! is_array( $row ) ) {
+						break;
+					}
+					$grant = $this->grantFromRow( $row );
+					if ( null !== $grant && $grant->issuer() === $issuer && $grant->isActiveAt( $timestamp, $grant->continuingAccess() ) ) {
+						$grants[] = $grant;
+					}
+				}
+				$result->free();
+
+				return $grants;
+			}
+		);
+	}
+
+	/**
+	 * Lists recent revoked authorization history for one exact site user.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param int    $userId Represented WordPress user.
+	 * @param int    $since Inclusive oldest retained revocation timestamp.
+	 * @param int    $limit Maximum records.
+	 * @return array<GrantRecord> Most recently revoked grants first.
+	 */
+	public function listRecentRevokedGrantsForUser( string $issuer, int $userId, int $since, int $limit = 100 ): array {
+		if ( '' === $issuer || $userId <= 0 || $since < 0 ) {
+			return array();
+		}
+		$limit = max( 1, min( 500, $limit ) );
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $userId, $since, $limit ): array {
+				$table  = self::quotedTable( Schema::grantTable() );
+				$result = $database->execute_query(
+					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint,revoked_at,revocation_reason
+					FROM {$table}
+					WHERE issuer = ? AND user_id = ? AND status = 'revoked' AND revoked_at >= ?
+					ORDER BY revoked_at DESC, id DESC LIMIT ?",
+					array( $issuer, $userId, $since, $limit )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Personal retained history uses an owned non-reconnecting connection.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+
+				$grants = array();
+				while ( true ) {
+					$row = $result->fetch_assoc();
+					if ( ! is_array( $row ) ) {
+						break;
+					}
+					$grant = $this->grantFromRow( $row );
+					if ( null !== $grant && $grant->issuer() === $issuer && $grant->userId() === $userId && 'revoked' === $grant->status() ) {
+						$grants[] = $grant;
+					}
+				}
+				$result->free();
+
+				return $grants;
+			}
+		);
+	}
+
+	/**
 	 * Lists active authorizations owned by one exact current-site user.
 	 *
 	 * @since 0.1.0
@@ -607,6 +735,62 @@ final class CredentialStore {
 	}
 
 	/**
+	 * Revokes one active grant only inside an exact site issuer boundary.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param int    $grantId Grant identifier.
+	 * @param int    $timestamp Current Unix timestamp.
+	 * @param string $reason Stable non-secret reason.
+	 * @return GrantRecord|null The closed grant, or null when it was outside the boundary.
+	 */
+	public function revokeGrantForIssuer( string $issuer, int $grantId, int $timestamp, string $reason ): ?GrantRecord {
+		if ( '' === $issuer || $grantId <= 0 || 1 !== preg_match( '/^[a-z0-9_]{1,64}$/D', $reason ) ) {
+			return null;
+		}
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $grantId, $timestamp, $reason ): ?GrantRecord {
+				$grant = $this->lockGrant( $database, $grantId );
+				if ( null === $grant || $grant->issuer() !== $issuer || 'active' !== $grant->status() ) {
+					return null;
+				}
+
+				$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', $reason );
+
+				return $grant;
+			}
+		);
+	}
+
+	/**
+	 * Revokes one active grant only for its exact current-site user owner.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param int    $userId Represented WordPress user.
+	 * @param int    $grantId Grant identifier.
+	 * @param int    $timestamp Current Unix timestamp.
+	 * @param string $reason Stable non-secret reason.
+	 */
+	public function revokeGrantForUser( string $issuer, int $userId, int $grantId, int $timestamp, string $reason ): bool {
+		if ( '' === $issuer || $userId <= 0 || $grantId <= 0 || 1 !== preg_match( '/^[a-z0-9_]{1,64}$/D', $reason ) ) {
+			return false;
+		}
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $userId, $grantId, $timestamp, $reason ): bool {
+				$grant = $this->lockGrant( $database, $grantId );
+				if ( null === $grant || $grant->issuer() !== $issuer || $grant->userId() !== $userId || 'active' !== $grant->status() ) {
+					return false;
+				}
+
+				$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', $reason );
+
+				return true;
+			}
+		);
+	}
+
+	/**
 	 * Revokes every active grant for one user under one exact site issuer.
 	 *
 	 * @since 0.1.0
@@ -710,6 +894,58 @@ final class CredentialStore {
 					}
 					$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', $reason );
 					++$revoked;
+				}
+
+				return $revoked;
+			}
+		);
+	}
+
+	/**
+	 * Revokes every active grant inside one exact site issuer boundary.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param int    $timestamp Current timestamp.
+	 * @param string $reason Stable non-secret reason.
+	 * @return array<GrantRecord> Exact grants closed by this transition.
+	 */
+	public function revokeAllGrantsForIssuer( string $issuer, int $timestamp, string $reason ): array {
+		if ( '' === $issuer || 1 !== preg_match( '/^[a-z0-9_]{1,64}$/D', $reason ) ) {
+			return array();
+		}
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $timestamp, $reason ): array {
+				$table  = self::quotedTable( Schema::grantTable() );
+				$result = $database->execute_query(
+					"SELECT id FROM {$table} WHERE issuer = ? AND status = 'active' FOR UPDATE",
+					array( $issuer )
+				); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Explicit site-wide revocation uses one owned atomic transaction.
+				if ( ! $result instanceof mysqli_result ) {
+					throw new RuntimeException( 'charter_database_query_failed' );
+				}
+
+				$grantIds = array();
+				while ( true ) {
+					$row = $result->fetch_assoc();
+					if ( ! is_array( $row ) ) {
+						break;
+					}
+					$grantId = self::integerValue( $row['id'] ?? null );
+					if ( is_int( $grantId ) && 0 < $grantId ) {
+						$grantIds[] = $grantId;
+					}
+				}
+				$result->free();
+
+				$revoked = array();
+				foreach ( $grantIds as $grantId ) {
+					$grant = $this->lockGrant( $database, $grantId );
+					if ( null === $grant || $grant->issuer() !== $issuer || 'active' !== $grant->status() ) {
+						continue;
+					}
+					$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', $reason );
+					$revoked[] = $grant;
 				}
 
 				return $revoked;
@@ -875,7 +1111,7 @@ final class CredentialStore {
 	private function selectGrant( mysqli $database, int $grantId ): ?GrantRecord {
 		$table  = self::quotedTable( Schema::grantTable() );
 		$result = $database->execute_query(
-			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint FROM {$table} WHERE id = ? LIMIT 1",
+			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint,revoked_at,revocation_reason FROM {$table} WHERE id = ? LIMIT 1",
 			array( $grantId )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Authoritative grant reads use an owned non-reconnecting connection.
 		if ( ! $result instanceof mysqli_result ) {
@@ -919,7 +1155,7 @@ final class CredentialStore {
 	private function lockGrant( mysqli $database, int $grantId ): ?GrantRecord {
 		$table  = self::quotedTable( Schema::grantTable() );
 		$result = $database->execute_query(
-			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint FROM {$table} WHERE id = ? FOR UPDATE",
+			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint,revoked_at,revocation_reason FROM {$table} WHERE id = ? FOR UPDATE",
 			array( $grantId )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Owned transaction SQL cannot use the reconnecting global wpdb connection.
 		if ( ! $result instanceof mysqli_result ) {
@@ -1080,11 +1316,19 @@ final class CredentialStore {
 			return null;
 		}
 
-		$absolute        = $row['refresh_absolute_expires_at'] ?? null;
-		$inactivity      = $row['refresh_inactivity_expires_at'] ?? null;
-		$absoluteValue   = self::integerValue( $absolute );
-		$inactivityValue = self::integerValue( $inactivity );
-		if ( ( null !== $absolute && null === $absoluteValue ) || ( null !== $inactivity && null === $inactivityValue ) ) {
+		$absolute         = $row['refresh_absolute_expires_at'] ?? null;
+		$inactivity       = $row['refresh_inactivity_expires_at'] ?? null;
+		$revokedAt        = $row['revoked_at'] ?? null;
+		$revocationReason = $row['revocation_reason'] ?? null;
+		$absoluteValue    = self::integerValue( $absolute );
+		$inactivityValue  = self::integerValue( $inactivity );
+		$revokedAtValue   = self::integerValue( $revokedAt );
+		if (
+			( null !== $absolute && null === $absoluteValue )
+			|| ( null !== $inactivity && null === $inactivityValue )
+			|| ( null !== $revokedAt && null === $revokedAtValue )
+			|| ( null !== $revocationReason && ! is_string( $revocationReason ) )
+		) {
 			return null;
 		}
 
@@ -1102,7 +1346,9 @@ final class CredentialStore {
 			$lastUsedAt,
 			$absoluteValue,
 			$inactivityValue,
-			$row['client_metadata_fingerprint']
+			$row['client_metadata_fingerprint'],
+			$revokedAtValue,
+			is_string( $revocationReason ) ? $revocationReason : null
 		);
 	}
 

@@ -98,4 +98,33 @@ final class LifecycleRecordTest extends TestCase {
 
 		self::assertFalse( $grant->isActiveAt( 2 ) );
 	}
+
+	/**
+	 * Verifies retained history exposes only its stable terminal metadata.
+	 *
+	 * @since 0.1.0
+	 */
+	public function testRevokedGrantCarriesRetainedReasonAndTimestamp(): void {
+		$grant = new GrantRecord(
+			4,
+			'https://issuer.example',
+			'https://issuer.example',
+			'client',
+			'https://client.example/callback',
+			2,
+			'wordpress:access', // phpcs:ignore WordPress.WP.CapitalPDangit.MisspelledInText -- OAuth scope identifiers are case-sensitive protocol values.
+			false,
+			'revoked',
+			1,
+			50,
+			null,
+			null,
+			'',
+			75,
+			'administrator_grant_revocation'
+		);
+
+		self::assertSame( 75, $grant->revokedAt() );
+		self::assertSame( 'administrator_grant_revocation', $grant->revocationReason() );
+	}
 }

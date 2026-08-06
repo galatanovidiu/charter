@@ -19,7 +19,7 @@ use RuntimeException;
 final class Schema {
 
 	private const VERSION_OPTION = 'charter_oauth_schema_version';
-	private const VERSION        = '4';
+	private const VERSION        = '5';
 
 	/**
 	 * Installs the schema only when the current version is absent.
@@ -144,6 +144,8 @@ final class Schema {
 			actor_user_id bigint(20) unsigned NULL,
 			represented_user_id bigint(20) unsigned NULL,
 			client_id text NULL,
+			resource text NULL,
+			scopes text NULL,
 			outcome varchar(32) NOT NULL,
 			reason varchar(64) NOT NULL,
 			source_address varchar(64) NULL,
@@ -352,7 +354,7 @@ final class Schema {
 		$requiredTables = array(
 			$clientTableName => array( 'id', 'issuer_digest', 'client_digest', 'issuer', 'client_id', 'client_name', 'redirect_uris', 'status', 'source', 'token_endpoint_auth_method', 'grant_types', 'client_secret_hash', 'metadata_fingerprint', 'created_at', 'last_activity_at', 'authorized_at', 'blocked_at', 'deleted_at' ),
 			$rateTableName   => array( 'bucket_digest', 'window_started_at', 'window_seconds', 'request_count', 'expires_at' ),
-			$auditTableName  => array( 'id', 'occurred_at', 'issuer_digest', 'issuer', 'event_type', 'actor_user_id', 'represented_user_id', 'client_id', 'outcome', 'reason', 'source_address' ),
+			$auditTableName  => array( 'id', 'occurred_at', 'issuer_digest', 'issuer', 'event_type', 'actor_user_id', 'represented_user_id', 'client_id', 'resource', 'scopes', 'outcome', 'reason', 'source_address' ),
 			$cimdTableName   => array( 'id', 'issuer_digest', 'client_digest', 'issuer', 'client_id', 'client_name', 'redirect_uris', 'grant_types', 'metadata_fingerprint', 'fetched_at', 'fresh_until' ),
 		);
 		foreach ( $requiredTables as $requiredTable => $requiredColumns ) {

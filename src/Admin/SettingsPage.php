@@ -14,6 +14,8 @@ use GalatanOvidiu\Charter\OAuth\ClientGovernance;
 use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
+use GalatanOvidiu\Charter\OAuth\GrantGovernance;
+use GalatanOvidiu\Charter\OAuth\GrantRecord;
 use GalatanOvidiu\Charter\Security\AuditLog;
 use GalatanOvidiu\Charter\Site\SiteState;
 use InvalidArgumentException;
@@ -35,6 +37,7 @@ final class SettingsPage {
 	 * @param ClientRegistry   $clients   Client registry.
 	 * @param CredentialStore  $credentials Grant persistence.
 	 * @param ClientGovernance $governance Administrator governance.
+	 * @param GrantGovernance  $grantGovernance Administrator grant governance.
 	 * @param AuditLog         $audit Security event ledger.
 	 */
 	public function __construct(
@@ -42,6 +45,7 @@ final class SettingsPage {
 		private readonly ClientRegistry $clients,
 		private readonly CredentialStore $credentials,
 		private readonly ClientGovernance $governance,
+		private readonly GrantGovernance $grantGovernance,
 		private readonly AuditLog $audit
 	) {
 	}
@@ -58,6 +62,8 @@ final class SettingsPage {
 		add_action( 'admin_post_charter_oauth_update_dcr', array( $this, 'updateDynamicRegistration' ) );
 		add_action( 'admin_post_charter_oauth_block_client', array( $this, 'blockClient' ) );
 		add_action( 'admin_post_charter_oauth_delete_client', array( $this, 'deleteClient' ) );
+		add_action( 'admin_post_charter_oauth_revoke_site_grant', array( $this, 'revokeGrant' ) );
+		add_action( 'admin_post_charter_oauth_revoke_all_site_grants', array( $this, 'revokeAllGrants' ) );
 	}
 
 	/**
@@ -83,9 +89,14 @@ final class SettingsPage {
 	public function render(): void {
 		$this->requireAdministrator();
 
-		$identity = $this->siteState->identity();
-		$clients  = null === $identity ? array() : $this->clients->listForIssuer( $identity->issuer() );
-		$events   = null === $identity ? array() : $this->audit->listForIssuer( $identity->issuer(), 50 );
+		$identity   = $this->siteState->identity();
+		$clients    = null === $identity ? array() : $this->clients->listForIssuer( $identity->issuer() );
+		$events     = null === $identity ? array() : $this->audit->listForIssuer( $identity->issuer(), 50 );
+		$grantCount = null === $identity ? 0 : $this->credentials->countActiveGrantsForIssuer( $identity->issuer() );
+		$grantPage  = max( 1, absint( self::getScalar( 'grant_page' ) ) );
+		$grantPages = max( 1, (int) ceil( $grantCount / 50 ) );
+		$grantPage  = min( $grantPage, $grantPages );
+		$grants     = null === $identity ? array() : $this->credentials->listActiveGrantsForIssuer( $identity->issuer(), 50, ( $grantPage - 1 ) * 50 );
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Charter OAuth', 'charter' ); ?></h1>
@@ -176,6 +187,40 @@ final class SettingsPage {
 						<?php endforeach; ?>
 						</tbody>
 					</table>
+				<?php endif; ?>
+
+				<h2><?php esc_html_e( 'Site authorizations', 'charter' ); ?></h2>
+				<p><?php /* translators: %d: Number of active OAuth grants. */ echo esc_html( sprintf( _n( '%d active authorization is issued in users’ names on this site.', '%d active authorizations are issued in users’ names on this site.', $grantCount, 'charter' ), $grantCount ) ); ?></p>
+				<?php if ( array() === $grants ) : ?>
+					<p><?php esc_html_e( 'No active OAuth authorizations exist for this issuer.', 'charter' ); ?></p>
+				<?php else : ?>
+					<table class="widefat striped">
+						<thead><tr><th><?php esc_html_e( 'Application', 'charter' ); ?></th><th><?php esc_html_e( 'Authorization', 'charter' ); ?></th><th><?php esc_html_e( 'Activity', 'charter' ); ?></th><th><?php esc_html_e( 'Action', 'charter' ); ?></th></tr></thead>
+						<tbody>
+						<?php $renderedUserId = 0; ?>
+						<?php foreach ( $grants as $grant ) : ?>
+							<?php if ( $renderedUserId !== $grant->userId() ) : ?>
+								<?php $renderedUserId = $grant->userId(); ?>
+								<tr><th colspan="4"><?php echo esc_html( $this->userLabel( $grant->userId() ) ); ?></th></tr>
+							<?php endif; ?>
+							<tr>
+								<td><strong><?php echo esc_html( $this->clientName( $grant ) ); ?></strong><br><code><?php echo esc_html( $grant->clientId() ); ?></code></td>
+								<td><?php /* translators: %s: Exact OAuth protected resource URL. */ echo esc_html( sprintf( __( 'Resource: %s', 'charter' ), $grant->resource() ) ); ?><br><?php /* translators: %s: Space-delimited OAuth scope identifiers. */ echo esc_html( sprintf( __( 'Scopes: %s', 'charter' ), $grant->scope() ) ); ?><br><?php echo esc_html( $grant->continuingAccess() ? __( 'Continuing access: Yes', 'charter' ) : __( 'Continuing access: No', 'charter' ) ); ?></td>
+								<td><?php /* translators: %s: Localized authorization date and time. */ echo esc_html( sprintf( __( 'Authorized: %s', 'charter' ), $this->formatTimestamp( $grant->authorizedAt() ) ) ); ?><br><?php /* translators: %s: Localized last activity date and time. */ echo esc_html( sprintf( __( 'Last activity: %s', 'charter' ), $this->formatTimestamp( $grant->lastUsedAt() ) ) ); ?></td>
+								<td><?php $this->renderGrantAction( $identity->issuer(), $grant->id() ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+						</tbody>
+					</table>
+					<?php $this->renderGrantPagination( $grantPage, $grantPages ); ?>
+					<h3><?php esc_html_e( 'Revoke all site access', 'charter' ); ?></h3>
+					<p><?php esc_html_e( 'This permanently disconnects every active OAuth authorization for this site. Client registrations remain available for users to authorize again.', 'charter' ); ?></p>
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+						<input type="hidden" name="action" value="charter_oauth_revoke_all_site_grants">
+						<?php wp_nonce_field( 'charter_oauth_revoke_all_site_grants:' . hash( 'sha256', $identity->issuer() ) ); ?>
+						<label><input type="checkbox" name="confirm_revocation" value="1" required> <?php esc_html_e( 'I understand that all active site authorizations will be revoked.', 'charter' ); ?></label>
+						<?php submit_button( __( 'Revoke all OAuth grants', 'charter' ), 'delete', 'submit', false ); ?>
+					</form>
 				<?php endif; ?>
 
 				<h2><?php esc_html_e( 'Recent OAuth security events', 'charter' ); ?></h2>
@@ -292,6 +337,37 @@ final class SettingsPage {
 		$this->governClient( 'delete' );
 	}
 
+	/** Revokes one exact current-site authorization. */
+	public function revokeGrant(): never {
+		$this->requireAdministrator();
+		$identity = $this->requireIdentity();
+		$grantId  = absint( self::postScalar( 'grant_id' ) );
+		$action   = 'charter_oauth_revoke_site_grant';
+		check_admin_referer( $action . ':' . hash( 'sha256', $identity->issuer() . "\0" . $grantId ) );
+
+		if ( null === $this->grantGovernance->revoke( $identity->issuer(), $grantId, get_current_user_id(), time() ) ) {
+			wp_die( esc_html__( 'The OAuth authorization could not be revoked.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		wp_safe_redirect( $this->settingsUrl() );
+		exit;
+	}
+
+	/** Revokes every active authorization inside the current site issuer. */
+	public function revokeAllGrants(): never {
+		$this->requireAdministrator();
+		$identity = $this->requireIdentity();
+		$action   = 'charter_oauth_revoke_all_site_grants';
+		check_admin_referer( $action . ':' . hash( 'sha256', $identity->issuer() ) );
+
+		if ( '1' !== self::postScalar( 'confirm_revocation' ) || array() === $this->grantGovernance->revokeAll( $identity->issuer(), get_current_user_id(), time() ) ) {
+			wp_die( esc_html__( 'The site OAuth authorizations could not be revoked.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		wp_safe_redirect( $this->settingsUrl() );
+		exit;
+	}
+
 	/**
 	 * Applies one nonce-protected administrator client action.
 	 *
@@ -393,6 +469,88 @@ final class SettingsPage {
 	}
 
 	/**
+	 * Renders one exact issuer-and-grant-bound revocation form.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 * @param int    $grantId Exact grant identifier.
+	 */
+	private function renderGrantAction( string $issuer, int $grantId ): void {
+		$action = 'charter_oauth_revoke_site_grant';
+		?>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="<?php echo esc_attr( $action ); ?>">
+			<input type="hidden" name="grant_id" value="<?php echo esc_attr( (string) $grantId ); ?>">
+			<?php wp_nonce_field( $action . ':' . hash( 'sha256', $issuer . "\0" . $grantId ) ); ?>
+			<?php submit_button( __( 'Revoke', 'charter' ), 'delete small', 'submit', false ); ?>
+		</form>
+		<?php
+	}
+
+	/**
+	 * Returns a safe client display name for one retained grant.
+	 *
+	 * @param GrantRecord $grant Retained authorization grant.
+	 */
+	private function clientName( GrantRecord $grant ): string {
+		$client = $this->clients->findRegistration( $grant->issuer(), $grant->clientId() );
+
+		return null === $client ? __( 'Unavailable application', 'charter' ) : $client->name();
+	}
+
+	/**
+	 * Returns one represented-user label without exposing private profile data.
+	 *
+	 * @param int $userId Represented WordPress user identifier.
+	 */
+	private function userLabel( int $userId ): string {
+		$user = get_userdata( $userId );
+		if ( false === $user ) {
+			/* translators: %d: WordPress user identifier. */
+			return sprintf( __( 'Unavailable user #%d', 'charter' ), $userId );
+		}
+
+		/* translators: 1: WordPress display name, 2: WordPress user identifier. */
+		return sprintf( __( '%1$s (user #%2$d)', 'charter' ), $user->display_name, $userId );
+	}
+
+	/**
+	 * Formats an administrator-visible grant timestamp in the site timezone.
+	 *
+	 * @param int $timestamp Unix timestamp.
+	 */
+	private function formatTimestamp( int $timestamp ): string {
+		$formatted = wp_date( 'Y-m-d H:i:s', $timestamp );
+
+		return is_string( $formatted ) ? $formatted : gmdate( 'Y-m-d H:i:s', $timestamp );
+	}
+
+	/**
+	 * Renders bounded previous and next authorization inventory links.
+	 *
+	 * @param int $page Current page.
+	 * @param int $pages Total page count.
+	 */
+	private function renderGrantPagination( int $page, int $pages ): void {
+		if ( $pages <= 1 ) {
+			return;
+		}
+		$baseUrl = admin_url( 'options-general.php?page=charter-oauth' );
+		?>
+		<p class="tablenav-pages">
+			<?php
+			if ( 1 < $page ) :
+				?>
+				<a class="button" href="<?php echo esc_url( add_query_arg( 'grant_page', $page - 1, $baseUrl ) ); ?>"><?php esc_html_e( 'Previous authorizations', 'charter' ); ?></a><?php endif; ?>
+			<?php /* translators: 1: Current page, 2: Total pages. */ echo esc_html( sprintf( __( 'Page %1$d of %2$d', 'charter' ), $page, $pages ) ); ?>
+			<?php
+			if ( $page < $pages ) :
+				?>
+				<a class="button" href="<?php echo esc_url( add_query_arg( 'grant_page', $page + 1, $baseUrl ) ); ?>"><?php esc_html_e( 'Next authorizations', 'charter' ); ?></a><?php endif; ?>
+		</p>
+		<?php
+	}
+
+	/**
 	 * Reads one unslashed scalar POST value.
 	 *
 	 * @since 0.1.0
@@ -401,6 +559,17 @@ final class SettingsPage {
 	 */
 	private static function postScalar( string $name ): string {
 		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Each action verifies its form nonce before using security-sensitive values.
+
+		return is_string( $value ) ? wp_unslash( $value ) : '';
+	}
+
+	/**
+	 * Reads one unslashed scalar query value for presentation-only pagination.
+	 *
+	 * @param string $name Query field name.
+	 */
+	private static function getScalar( string $name ): string {
+		$value = $_GET[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only pagination cannot mutate state.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
 	}

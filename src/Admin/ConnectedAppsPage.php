@@ -20,6 +20,16 @@ use GalatanOvidiu\Charter\Site\SiteState;
  * @since 0.1.0
  */
 final class ConnectedAppsPage {
+	private const NOTICE_CURSOR_OPTION = 'charter_oauth_revocation_notice_cursor';
+	private const HISTORY_RETENTION    = 7776000;
+	private const NOTICE_REASONS       = array(
+		'administrator_grant_revocation',
+		'administrator_site_revocation',
+		'administrator_client_block',
+		'administrator_client_delete',
+		'authorization_code_replay',
+		'refresh_token_replay',
+	);
 
 	/**
 	 * Creates the personal authorization screen.
@@ -44,6 +54,7 @@ final class ConnectedAppsPage {
 	 */
 	public function registerHooks(): void {
 		add_action( 'admin_menu', array( $this, 'registerPage' ) );
+		add_action( 'admin_notices', array( $this, 'renderRevocationNotice' ) );
 		add_action( 'admin_post_charter_oauth_revoke_personal_grant', array( $this, 'revoke' ) );
 	}
 
@@ -74,6 +85,9 @@ final class ConnectedAppsPage {
 		$grants   = null === $identity
 			? array()
 			: $this->credentials->listActiveGrantsForUser( $identity->issuer(), $userId );
+		$history  = null === $identity
+			? array()
+			: $this->credentials->listRecentRevokedGrantsForUser( $identity->issuer(), $userId, time() - self::HISTORY_RETENTION );
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Connected Apps', 'charter' ); ?></h1>
@@ -102,6 +116,23 @@ final class ConnectedAppsPage {
 					</tbody>
 				</table>
 			<?php endif; ?>
+
+			<?php if ( array() !== $history ) : ?>
+				<h2><?php esc_html_e( 'Recently disconnected', 'charter' ); ?></h2>
+				<p><?php esc_html_e( 'Charter retains revoked authorization history for up to 90 days so you can understand why access ended.', 'charter' ); ?></p>
+				<table class="widefat striped">
+					<thead><tr><th><?php esc_html_e( 'Application', 'charter' ); ?></th><th><?php esc_html_e( 'Authorization', 'charter' ); ?></th><th><?php esc_html_e( 'Disconnected', 'charter' ); ?></th></tr></thead>
+					<tbody>
+					<?php foreach ( $history as $grant ) : ?>
+						<tr>
+							<td><strong><?php echo esc_html( $this->clientName( $grant ) ); ?></strong><br><code><?php echo esc_html( $grant->clientId() ); ?></code></td>
+							<td><?php /* translators: %s: Exact OAuth protected resource URL. */ echo esc_html( sprintf( __( 'Resource: %s', 'charter' ), $grant->resource() ) ); ?><br><?php /* translators: %s: Space-delimited OAuth scope identifiers. */ echo esc_html( sprintf( __( 'Scopes: %s', 'charter' ), $grant->scope() ) ); ?></td>
+							<td><?php echo esc_html( $this->revocationReason( $grant->revocationReason() ) ); ?><br><?php echo esc_html( $this->formatTimestamp( $grant->revokedAt() ?? $grant->lastUsedAt() ) ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+			<?php endif; ?>
 		</div>
 		<?php
 	}
@@ -117,13 +148,9 @@ final class ConnectedAppsPage {
 		check_admin_referer( 'charter_oauth_revoke_personal_grant:' . $grantId );
 
 		$identity = $this->siteState->identity();
-		$grant    = $this->credentials->findGrant( $grantId );
 		if (
 			null === $identity
-			|| null === $grant
-			|| $grant->issuer() !== $identity->issuer()
-			|| $grant->userId() !== $userId
-			|| ! $this->credentials->revokeGrant( $grantId, time(), 'user_revocation' )
+			|| ! $this->credentials->revokeGrantForUser( $identity->issuer(), $userId, $grantId, time(), 'user_revocation' )
 		) {
 			wp_die( esc_html__( 'The OAuth authorization could not be disconnected.', 'charter' ), '', array( 'response' => 400 ) );
 		}
@@ -133,14 +160,113 @@ final class ConnectedAppsPage {
 	}
 
 	/**
+	 * Shows one grouped next-dashboard notice for unseen replay/admin revocation.
+	 */
+	public function renderRevocationNotice(): void {
+		$userId   = get_current_user_id();
+		$identity = $this->siteState->identity();
+		if ( $userId <= 0 || ! current_user_can( 'read' ) || null === $identity ) {
+			return;
+		}
+
+		$cursor  = self::noticeCursor( get_user_option( self::NOTICE_CURSOR_OPTION, $userId ) );
+		$history = $this->credentials->listRecentRevokedGrantsForUser( $identity->issuer(), $userId, time() - self::HISTORY_RETENTION );
+		$unseen  = array_values(
+			array_filter(
+				$history,
+				static fn ( GrantRecord $grant ): bool => self::isAfterCursor( $grant, $cursor ) && in_array( $grant->revocationReason(), self::NOTICE_REASONS, true )
+			)
+		);
+		if ( array() === $unseen ) {
+			return;
+		}
+
+		$newest = $unseen[0];
+		update_user_option(
+			$userId,
+			self::NOTICE_CURSOR_OPTION,
+			array(
+				'revoked_at' => $newest->revokedAt(),
+				'grant_id'   => $newest->id(),
+			)
+		);
+		?>
+		<div class="notice notice-warning is-dismissible"><p>
+			<?php echo esc_html( _n( 'One OAuth authorization was revoked for security or by a site administrator.', 'Multiple OAuth authorizations were revoked for security or by a site administrator.', count( $unseen ), 'charter' ) ); ?>
+			<a href="<?php echo esc_url( $this->pageUrl() ); ?>"><?php esc_html_e( 'Review disconnected apps and reasons.', 'charter' ); ?></a>
+		</p></div>
+		<?php
+	}
+
+	/**
 	 * Returns a display name without exposing registration secrets.
 	 *
 	 * @param GrantRecord $grant Authorization grant.
 	 */
 	private function clientName( GrantRecord $grant ): string {
-		$client = $this->clients->findActive( $grant->issuer(), $grant->clientId() );
+		$client = $this->clients->findRegistration( $grant->issuer(), $grant->clientId() );
 
 		return null === $client ? __( 'Unavailable application', 'charter' ) : $client->name();
+	}
+
+	/**
+	 * Returns a stable reason as local user-facing language.
+	 *
+	 * @param string|null $reason Stable stored revocation reason.
+	 */
+	private function revocationReason( ?string $reason ): string {
+		return match ( $reason ) {
+			'user_revocation'                 => __( 'You disconnected this authorization.', 'charter' ),
+			'rfc7009_revocation'              => __( 'The application disconnected this authorization.', 'charter' ),
+			'administrator_grant_revocation'  => __( 'A site administrator revoked this authorization.', 'charter' ),
+			'administrator_site_revocation'   => __( 'A site administrator revoked all site OAuth access.', 'charter' ),
+			'administrator_client_block'      => __( 'A site administrator blocked this application.', 'charter' ),
+			'administrator_client_delete'     => __( 'A site administrator deleted this application.', 'charter' ),
+			'authorization_code_replay'       => __( 'Charter detected reuse of an authorization code.', 'charter' ),
+			'refresh_token_replay'            => __( 'Charter detected reuse of a rotated refresh token.', 'charter' ),
+			'password_changed'                => __( 'Your WordPress password changed.', 'charter' ),
+			'user_deleted'                    => __( 'The represented WordPress account was deleted.', 'charter' ),
+			'site_access_removed'             => __( 'The represented WordPress account lost access to this site.', 'charter' ),
+			default                           => __( 'Charter revoked this authorization.', 'charter' ),
+		};
+	}
+
+	/**
+	 * Converts one persisted notification cursor to a safe tuple.
+	 *
+	 * @param mixed $value Persisted user-option value.
+	 * @return array{revoked_at:int,grant_id:int}
+	 */
+	private static function noticeCursor( mixed $value ): array {
+		if ( ! is_array( $value ) ) {
+			return array(
+				'revoked_at' => 0,
+				'grant_id'   => 0,
+			);
+		}
+		$revokedAt = $value['revoked_at'] ?? null;
+		$grantId   = $value['grant_id'] ?? null;
+
+		return array(
+			'revoked_at' => is_int( $revokedAt ) && 0 <= $revokedAt ? $revokedAt : 0,
+			'grant_id'   => is_int( $grantId ) && 0 <= $grantId ? $grantId : 0,
+		);
+	}
+
+	/**
+	 * Reports whether one retained grant sorts after the seen notice cursor.
+	 *
+	 * @param GrantRecord                        $grant Retained revoked grant.
+	 * @param array{revoked_at:int,grant_id:int} $cursor Last displayed notice tuple.
+	 */
+	private static function isAfterCursor( GrantRecord $grant, array $cursor ): bool {
+		$revokedAt = $grant->revokedAt();
+		if ( ! is_int( $revokedAt ) ) {
+			return false;
+		}
+
+		return $revokedAt > $cursor['revoked_at']
+			|| ( $revokedAt === $cursor['revoked_at'] && $grant->id() > $cursor['grant_id'] );
 	}
 
 	/**
