@@ -19,6 +19,7 @@ use GalatanOvidiu\Charter\Site\SiteIdentity;
  * @since 0.1.0
  *
  * @phpstan-type ContainmentSnapshot array{mode:string,changed_at:?int,actor:string,actor_user_id:?int,audit_pending:bool}
+ * @phpstan-type SigningKeySnapshot array{source:string,status:string,database_fallback:bool,generation:int,adoption_count:int,changed_at:?int,actor:string,actor_user_id:?int,audit_pending:bool,mismatch_id:?string,transition_id:?string}
  */
 final class NetworkSiteSnapshot {
 
@@ -33,7 +34,9 @@ final class NetworkSiteSnapshot {
 	 * @param array<GrantRecord>   $activeGrants Bounded active-grant page.
 	 * @param array<AuditEvent>    $events Bounded site event history.
 	 * @param array<string, mixed> $containment Secret-free containment status.
+	 * @param array<string, mixed> $signingKey Secret-free signing-key status.
 	 * @phpstan-param ContainmentSnapshot $containment
+	 * @phpstan-param SigningKeySnapshot $signingKey
 	 */
 	public function __construct(
 		private readonly int $siteId,
@@ -43,7 +46,8 @@ final class NetworkSiteSnapshot {
 		private readonly int $activeGrantCount,
 		private readonly array $activeGrants,
 		private readonly array $events,
-		private readonly array $containment
+		private readonly array $containment,
+		private readonly array $signingKey
 	) {
 	}
 
@@ -108,5 +112,45 @@ final class NetworkSiteSnapshot {
 	/** Reports whether the applied mode still needs audit reconciliation. */
 	public function containmentAuditPending(): bool {
 		return $this->containment['audit_pending'];
+	}
+
+	/** Returns the configured root-key source. */
+	public function signingKeySource(): string {
+		return $this->signingKey['source'];
+	}
+
+	/** Returns the current secret-free key status. */
+	public function signingKeyStatus(): string {
+		return $this->signingKey['status'];
+	}
+
+	/** Reports database-backed fallback for WordPress-derived material. */
+	public function signingKeyUsesDatabaseFallback(): bool {
+		return $this->signingKey['database_fallback'];
+	}
+
+	/** Returns the current explicit credential generation. */
+	public function signingKeyGeneration(): int {
+		return $this->signingKey['generation'];
+	}
+
+	/** Returns the number of explicit replacement adoptions. */
+	public function signingKeyAdoptionCount(): int {
+		return $this->signingKey['adoption_count'];
+	}
+
+	/** Reports whether key-adoption audit reconciliation is pending. */
+	public function signingKeyAuditPending(): bool {
+		return $this->signingKey['audit_pending'];
+	}
+
+	/** Returns the exact non-secret current mismatch binding. */
+	public function signingKeyMismatchId(): ?string {
+		return $this->signingKey['mismatch_id'];
+	}
+
+	/** Returns the exact non-secret pending transition binding. */
+	public function signingKeyTransitionId(): ?string {
+		return $this->signingKey['transition_id'];
 	}
 }

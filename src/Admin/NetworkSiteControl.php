@@ -15,6 +15,7 @@ use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
+use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\Schema;
 use GalatanOvidiu\Charter\Security\AuditLog;
 use GalatanOvidiu\Charter\Site\NetworkActivation;
@@ -26,6 +27,8 @@ use Throwable;
  * Executes one operation at a time inside one selected site's own boundary.
  *
  * @since 0.1.0
+ *
+ * @phpstan-type SigningKeyBinding array{site_id:int,issuer:string,kind:string,binding_id:string}
  */
 final class NetworkSiteControl {
 
@@ -37,13 +40,15 @@ final class NetworkSiteControl {
 	 * @param GrantGovernance      $grantGovernance Current switched-site grant governance.
 	 * @param AuditLog             $audit Current switched-site security ledger.
 	 * @param EmergencyContainment $containment Current switched-site emergency mode.
+	 * @param SigningKeyLifecycle  $signingKeys Current switched-site key lifecycle.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly CredentialStore $credentials,
 		private readonly GrantGovernance $grantGovernance,
 		private readonly AuditLog $audit,
-		private readonly EmergencyContainment $containment
+		private readonly EmergencyContainment $containment,
+		private readonly SigningKeyLifecycle $signingKeys
 	) {
 	}
 
@@ -77,7 +82,7 @@ final class NetworkSiteControl {
 					$events     = $this->audit->listForIssuer( $identity->issuer(), 50 );
 				}
 
-				return new NetworkSiteSnapshot( $siteId, $this->siteState->state(), $identity, $storageReady, $grantCount, $grants, $events, $this->containment->snapshot() );
+				return new NetworkSiteSnapshot( $siteId, $this->siteState->state(), $identity, $storageReady, $grantCount, $grants, $events, $this->containment->snapshot(), $this->signingKeys->snapshot() );
 			}
 		);
 	}
@@ -110,7 +115,7 @@ final class NetworkSiteControl {
 					return false;
 				}
 
-				( new MetadataController( $this->siteState, new AccessPolicyProvider(), $this->containment ) )->registerRewriteRules();
+				( new MetadataController( $this->siteState, new AccessPolicyProvider(), $this->containment, $this->signingKeys ) )->registerRewriteRules();
 				flush_rewrite_rules( false );
 				$this->audit->record( $identity->issuer(), 'site_prepared', 'success', 'network_administrator_preparation', $actorUserId, null, null, null, $timestamp );
 
@@ -310,5 +315,196 @@ final class NetworkSiteControl {
 		}
 
 		return $counts;
+	}
+
+	/**
+	 * Adopts one exact selected issuer's current explicit-key mismatch.
+	 *
+	 * @param int    $siteId Selected WordPress site identifier.
+	 * @param string $expectedIssuer Exact issuer bound to the action.
+	 * @param string $expectedMismatchId Exact non-secret mismatch binding.
+	 * @param int    $actorUserId Acting network administrator.
+	 * @param int    $timestamp Current Unix timestamp.
+	 */
+	public function adoptSigningKey( int $siteId, string $expectedIssuer, string $expectedMismatchId, int $actorUserId, int $timestamp ): bool {
+		if ( '' === $expectedIssuer || '' === $expectedMismatchId || $actorUserId <= 0 || ! SiteOrchestrator::isOperableSite( $siteId, true ) ) {
+			return false;
+		}
+
+		try {
+			return true === SiteOrchestrator::withinSite(
+				$siteId,
+				fn (): bool => $this->signingKeys->adoptReplacement(
+					SigningKeyLifecycle::ACTOR_NETWORK_ADMIN,
+					$actorUserId,
+					$timestamp,
+					$expectedIssuer,
+					$expectedMismatchId
+				)
+			);
+		} catch ( Throwable ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Reconciles one selected issuer's exact pending adoption audit event.
+	 *
+	 * @param int    $siteId Selected WordPress site identifier.
+	 * @param string $expectedIssuer Exact issuer bound to the action.
+	 * @param string $expectedTransitionId Exact pending transition binding.
+	 */
+	public function reconcileSigningKeyAudit( int $siteId, string $expectedIssuer, string $expectedTransitionId ): bool {
+		if ( '' === $expectedIssuer || '' === $expectedTransitionId || ! SiteOrchestrator::isOperableSite( $siteId, true ) ) {
+			return false;
+		}
+
+		try {
+			return true === SiteOrchestrator::withinSite(
+				$siteId,
+				fn (): bool => $this->signingKeys->reconcilePendingAudit( $expectedIssuer, $expectedTransitionId )
+			);
+		} catch ( Throwable ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Returns one exact non-secret binding for all actionable site transitions.
+	 *
+	 * @return array{batch_id:string,actionable:int}
+	 */
+	public function signingKeyBatch(): array {
+		if ( ! NetworkActivation::isActive() ) {
+			return array(
+				'batch_id'   => '',
+				'actionable' => 0,
+			);
+		}
+		$bindings = $this->signingKeyBindings( SiteOrchestrator::liveCurrentNetworkSiteIds() );
+
+		return array(
+			'batch_id'   => self::signingKeyBatchId( $bindings ),
+			'actionable' => count( $bindings ),
+		);
+	}
+
+	/**
+	 * Applies the exact current network batch as sequential issuer-local changes.
+	 *
+	 * @param string $expectedBatchId Exact current non-secret batch binding.
+	 * @param int    $actorUserId Acting network administrator.
+	 * @param int    $timestamp Current Unix timestamp.
+	 * @return array{changed:int,skipped:int,pending:int,failed:int}
+	 */
+	public function adoptAllSigningKeys( string $expectedBatchId, int $actorUserId, int $timestamp ): array {
+		$counts   = array(
+			'changed' => 0,
+			'skipped' => 0,
+			'pending' => 0,
+			'failed'  => 0,
+		);
+		$siteIds  = SiteOrchestrator::liveCurrentNetworkSiteIds();
+		$bindings = $this->signingKeyBindings( $siteIds );
+		$batchId  = self::signingKeyBatchId( $bindings );
+		if ( $actorUserId <= 0 || array() === $bindings || '' === $expectedBatchId || ! hash_equals( $batchId, $expectedBatchId ) ) {
+			$counts['failed'] = 1;
+
+			return $counts;
+		}
+		$counts['skipped'] = max( 0, count( $siteIds ) - count( $bindings ) );
+
+		foreach ( $bindings as $binding ) {
+			$siteId = $binding['site_id'];
+			try {
+				$result = SiteOrchestrator::withinSite(
+					$siteId,
+					function () use ( $binding, $actorUserId, $timestamp ): string {
+						$identity = $this->siteState->identity();
+						if ( null === $identity || ! $this->siteState->isEnabled() || ! hash_equals( $binding['issuer'], $identity->issuer() ) ) {
+							return 'failed';
+						}
+						if ( 'audit' === $binding['kind'] ) {
+							return $this->signingKeys->reconcilePendingAudit( $binding['issuer'], $binding['binding_id'] ) ? 'changed' : 'failed';
+						}
+						if ( 'mismatch' !== $binding['kind'] || ! $this->signingKeys->adoptReplacement( SigningKeyLifecycle::ACTOR_NETWORK_ADMIN, $actorUserId, $timestamp, $binding['issuer'], $binding['binding_id'] ) ) {
+							return 'failed';
+						}
+
+						return $this->signingKeys->snapshot()['audit_pending'] ? 'pending' : 'changed';
+					}
+				);
+			} catch ( Throwable ) {
+				$result = 'failed';
+			}
+			++$counts[ $result ];
+		}
+
+		return $counts;
+	}
+
+	/**
+	 * Captures exact actionable issuer transitions in stable site order.
+	 *
+	 * @param array<int> $siteIds Current network site IDs.
+	 * @return array<int, array<string, mixed>> Exact issuer-local bindings.
+	 * @phpstan-return array<int, SigningKeyBinding>
+	 */
+	private function signingKeyBindings( array $siteIds ): array {
+		$bindings = array();
+		foreach ( $siteIds as $siteId ) {
+			try {
+				$binding = SiteOrchestrator::withinSite(
+					$siteId,
+					function () use ( $siteId ): ?array {
+						$identity = $this->siteState->identity();
+						if ( null === $identity || ! $this->siteState->isEnabled() ) {
+							return null;
+						}
+						$snapshot = $this->signingKeys->snapshot();
+						if ( $snapshot['audit_pending'] && is_string( $snapshot['transition_id'] ) ) {
+							return array(
+								'site_id'    => $siteId,
+								'issuer'     => $identity->issuer(),
+								'kind'       => 'audit',
+								'binding_id' => $snapshot['transition_id'],
+							);
+						}
+						if ( is_string( $snapshot['mismatch_id'] ) ) {
+							return array(
+								'site_id'    => $siteId,
+								'issuer'     => $identity->issuer(),
+								'kind'       => 'mismatch',
+								'binding_id' => $snapshot['mismatch_id'],
+							);
+						}
+
+						return null;
+					}
+				);
+			} catch ( Throwable ) {
+				$binding = null;
+			}
+			if ( is_array( $binding ) ) {
+				$bindings[] = $binding;
+			}
+		}
+
+		return $bindings;
+	}
+
+	/**
+	 * Hashes one ordered set of exact site, issuer, kind, and transition bindings.
+	 *
+	 * @param array<int, array<string, mixed>> $bindings Exact issuer-local bindings.
+	 * @phpstan-param array<int, SigningKeyBinding> $bindings
+	 */
+	private static function signingKeyBatchId( array $bindings ): string {
+		$values = array_map(
+			static fn ( array $binding ): string => implode( "\0", array( (string) $binding['site_id'], $binding['issuer'], $binding['kind'], $binding['binding_id'] ) ),
+			$bindings
+		);
+
+		return hash( 'sha256', implode( "\n", $values ) );
 	}
 }

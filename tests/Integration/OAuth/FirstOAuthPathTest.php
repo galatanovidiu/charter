@@ -17,6 +17,7 @@ use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
+use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\TransactionManager;
 use GalatanOvidiu\Charter\Plugin;
@@ -788,6 +789,73 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertNull( $revoked->get_data() );
 		self::assertSame( 'no-store', $revoked->get_headers()['Cache-Control'] );
 		self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', $accessToken )->get_status() );
+	}
+
+	/** Verifies current effective WordPress salts rotate without an adoption outage. */
+	public function testWordPressSaltRotationImmediatelyUsesCurrentMaterialWithoutDisablingOAuth(): void {
+		$this->enableIssuer();
+		$phase      = 'phase-a';
+		$saltFilter = static function ( string $salt, string $scheme ) use ( &$phase ): string {
+			unset( $salt );
+
+			return hash( 'sha256', 'charter-production-salt-rotation:' . $phase . ':' . $scheme );
+		};
+		add_filter( 'salt', $saltFilter, PHP_INT_MAX, 2 );
+
+		try {
+			$plugin      = Plugin::boot();
+			$phaseAToken = $this->issueAccessToken();
+			self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/protected', $phaseAToken )->get_status() );
+			wp_set_current_user( $this->userId );
+			$phaseANonce = wp_create_nonce( 'charter-wordpress-key-rotation' );
+			wp_set_current_user( 0 );
+
+			$phase = 'phase-b';
+			self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', $phaseAToken )->get_status() );
+			$snapshot = $plugin->signingKeys()->snapshot();
+			self::assertSame( SigningKeyLifecycle::SOURCE_WORDPRESS, $snapshot['source'] );
+			self::assertSame( SigningKeyLifecycle::STATUS_AUTOMATIC, $snapshot['status'] );
+			self::assertSame( 0, $snapshot['adoption_count'] );
+			self::assertTrue( $plugin->signingKeys()->credentialOperationsAllowed() );
+
+			$phaseBToken = $this->issueAccessToken();
+			self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/protected', $phaseBToken )->get_status() );
+			self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/public', 'not-a-charter-credential' )->get_status(), 'Public REST remains independent of Charter credential digests.' );
+			wp_set_current_user( $this->userId );
+			self::assertFalse( wp_verify_nonce( $phaseANonce, 'charter-wordpress-key-rotation' ), 'WordPress itself retires nonces derived from prior effective salt material.' );
+			$phaseBNonce = wp_create_nonce( 'charter-wordpress-key-rotation' );
+			self::assertContains( wp_verify_nonce( $phaseBNonce, 'charter-wordpress-key-rotation' ), array( 1, 2 ), 'Current WordPress nonce authentication remains available.' );
+			self::assertSame( 200, $this->dispatch( 'GET', '/charter-test/v1/protected' )->get_status(), 'Cookie authentication remains independent of Charter credential digests.' );
+			$applicationPassword = WP_Application_Passwords::create_new_application_password( $this->userId, array( 'name' => 'WordPress key rotation boundary' ) );
+			self::assertIsArray( $applicationPassword );
+			$user = get_userdata( $this->userId );
+			self::assertNotFalse( $user );
+			add_filter( 'wp_is_application_passwords_available', '__return_true' );
+			add_filter( 'application_password_is_api_request', '__return_true' );
+			try {
+				wp_set_current_user( 0 );
+				$_SERVER['PHP_AUTH_USER'] = $user->user_login;
+				$_SERVER['PHP_AUTH_PW']   = $applicationPassword[0];
+				$applicationUserId        = wp_validate_application_password( false );
+				self::assertSame( $this->userId, $applicationUserId );
+				wp_set_current_user( $applicationUserId );
+				self::assertSame( 200, $this->dispatch( 'GET', '/charter-test/v1/protected' )->get_status(), 'Application Password authentication remains available.' );
+			} finally {
+				remove_filter( 'wp_is_application_passwords_available', '__return_true' );
+				remove_filter( 'application_password_is_api_request', '__return_true' );
+				unset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] );
+				$GLOBALS['wp_rest_application_password_status'] = null; // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- Resets Core authentication test state.
+				WP_Application_Passwords::delete_all_application_passwords( $this->userId );
+			}
+			wp_set_current_user( 0 );
+
+			$phase = 'phase-a';
+			self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/protected', $phaseAToken )->get_status(), 'Restoring prior WordPress material makes its still-active credential reachable again because WordPress-derived mode has no fingerprint adoption guard.' );
+			self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', $phaseBToken )->get_status() );
+		} finally {
+			remove_filter( 'salt', $saltFilter, PHP_INT_MAX );
+			wp_set_current_user( 0 );
+		}
 	}
 
 	/**

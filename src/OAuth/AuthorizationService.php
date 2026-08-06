@@ -37,6 +37,7 @@ final class AuthorizationService {
 	 * @param AuditLog               $audit Security event ledger.
 	 * @param AccessPolicyProvider   $accessPolicy Active exact resource and scope registrations.
 	 * @param EmergencyContainment   $containment Issuer-local emergency mode.
+	 * @param SigningKeyLifecycle    $signingKeys Issuer-local credential-key lifecycle.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
@@ -46,7 +47,8 @@ final class AuthorizationService {
 		private readonly RateLimiter $rateLimiter,
 		private readonly AuditLog $audit,
 		private readonly AccessPolicyProvider $accessPolicy,
-		private readonly EmergencyContainment $containment
+		private readonly EmergencyContainment $containment,
+		private readonly SigningKeyLifecycle $signingKeys
 	) {
 	}
 
@@ -65,6 +67,9 @@ final class AuthorizationService {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
 		}
 		if ( ! $this->containment->issuanceAllowed() ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
+		}
+		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
 
@@ -156,6 +161,9 @@ final class AuthorizationService {
 		if ( null === $identity ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
 		}
+		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
+		}
 		$this->enforceAuthorizationLimit( $identity->issuer(), self::requiredParameter( $parameters, 'client_id', 2048 ), $userId, time() );
 
 		$request     = $this->validate( $parameters );
@@ -184,6 +192,9 @@ final class AuthorizationService {
 		$identity = $this->siteState->identity();
 		if ( ! $this->siteState->isEnabled() || ! $this->siteState->requestMatchesIdentity() || null === $identity ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
+		}
+		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
 
 		$timestamp = time();

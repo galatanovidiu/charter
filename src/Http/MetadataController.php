@@ -13,6 +13,7 @@ use GalatanOvidiu\Charter\OAuth\AuthorizationService;
 use GalatanOvidiu\Charter\OAuth\AccessPolicyProvider;
 use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
+use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\Site\SiteState;
 use WP_Error;
 use WP_REST_Request;
@@ -33,11 +34,13 @@ final class MetadataController {
 	 * @param SiteState            $siteState Site lifecycle and identity.
 	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
 	 * @param EmergencyContainment $containment Issuer-local emergency mode.
+	 * @param SigningKeyLifecycle  $signingKeys Issuer-local credential-key lifecycle.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly AccessPolicyProvider $accessPolicy,
-		private readonly EmergencyContainment $containment
+		private readonly EmergencyContainment $containment,
+		private readonly SigningKeyLifecycle $signingKeys
 	) {
 	}
 
@@ -135,7 +138,7 @@ final class MetadataController {
 				'authorization_response_iss_parameter_supported' => true,
 				'client_id_metadata_document_supported' => true,
 			);
-			if ( DynamicRegistrationService::isEnabled() && $this->containment->issuanceAllowed() ) {
+			if ( DynamicRegistrationService::isEnabled() && $this->containment->issuanceAllowed() && $this->signingKeys->credentialOperationsAllowed() ) {
 				$data['registration_endpoint'] = $urls->registrationEndpoint();
 			}
 		}

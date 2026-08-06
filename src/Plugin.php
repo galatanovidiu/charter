@@ -33,6 +33,7 @@ use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\RetentionCleanup;
+use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\UserSecurityEvents;
 use GalatanOvidiu\Charter\Rest\BearerAuthenticator;
@@ -171,6 +172,13 @@ final class Plugin {
 	private readonly EmergencyContainment $containment;
 
 	/**
+	 * Issuer-local credential signing-key lifecycle.
+	 *
+	 * @var SigningKeyLifecycle
+	 */
+	private readonly SigningKeyLifecycle $signingKeys;
+
+	/**
 	 * Request-local integration access registrations.
 	 *
 	 * @var AccessPolicyProvider
@@ -185,19 +193,20 @@ final class Plugin {
 	private function __construct() {
 		$this->siteState               = new SiteState();
 		$this->clients                 = new ClientRegistry();
-		$this->credentials             = new CredentialStore( new CredentialHasher() );
+		$this->audit                   = new AuditLog();
+		$this->signingKeys             = new SigningKeyLifecycle( $this->siteState, $this->audit );
+		$this->credentials             = new CredentialStore( new CredentialHasher( $this->signingKeys ) );
 		$this->clientMetadataSnapshots = new ClientMetadataSnapshotStore();
 		$this->accessPolicy            = new AccessPolicyProvider();
-		$this->audit                   = new AuditLog();
 		$this->containment             = new EmergencyContainment( $this->siteState, $this->audit );
 		$this->rateLimiter             = new RateLimiter();
 		$this->cleanup                 = new ClientCleanup( $this->siteState, new RetentionCleanup(), $this->audit );
 		$this->clientGovernance        = new ClientGovernance( $this->clients, $this->credentials, $this->audit, $this->clientMetadataSnapshots );
 		$this->grantGovernance         = new GrantGovernance( $this->credentials, $this->audit );
-		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit, $this->containment );
+		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit, $this->containment, $this->signingKeys );
 		$clientMetadata                = new ClientMetadataResolver( $this->clients, $this->clientMetadataSnapshots, new BoundedHostResolver(), new BoundedDirectJsonFetcher() );
-		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit, $this->accessPolicy, $this->containment );
-		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy, $this->containment );
+		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit, $this->accessPolicy, $this->containment, $this->signingKeys );
+		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy, $this->containment, $this->signingKeys );
 		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens, $this->accessPolicy );
 
 		if ( function_exists( 'add_action' ) ) {
@@ -237,7 +246,7 @@ final class Plugin {
 		$plugin = self::boot();
 		Schema::install();
 		$plugin->siteState->prepareCurrentSite();
-		( new MetadataController( $plugin->siteState, $plugin->accessPolicy, $plugin->containment ) )->registerRewriteRules();
+		( new MetadataController( $plugin->siteState, $plugin->accessPolicy, $plugin->containment, $plugin->signingKeys ) )->registerRewriteRules();
 		flush_rewrite_rules();
 	}
 
@@ -348,6 +357,11 @@ final class Plugin {
 		return $this->containment;
 	}
 
+	/** Returns the current issuer's credential signing-key lifecycle. */
+	public function signingKeys(): SigningKeyLifecycle {
+		return $this->signingKeys;
+	}
+
 	/**
 	 * Prepares an existing active single site after a plugin-code upgrade.
 	 *
@@ -375,14 +389,14 @@ final class Plugin {
 	 * @since 0.1.0
 	 */
 	private function registerHooks(): void {
-		$metadata      = new MetadataController( $this->siteState, $this->accessPolicy, $this->containment );
+		$metadata      = new MetadataController( $this->siteState, $this->accessPolicy, $this->containment, $this->signingKeys );
 		$tokens        = new TokenController( $this->tokens );
 		$revocation    = new RevocationController( $this->tokens );
 		$registration  = new RegistrationController( $this->dynamicRegistration );
 		$authorization = new AuthorizationController( $this->siteState, $this->authorization );
-		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit, $this->containment );
+		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit, $this->containment, $this->signingKeys );
 		$connectedApps = new ConnectedAppsPage( $this->siteState, $this->clients, $this->credentials );
-		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit, $this->containment ) );
+		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit, $this->containment, $this->signingKeys ) );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );
 		$cors          = new CorsPolicy();
 
@@ -401,6 +415,7 @@ final class Plugin {
 		$cors->registerHooks();
 		$this->cleanup->registerHooks();
 		$this->containment->registerHooks();
+		$this->signingKeys->registerHooks();
 		$this->bearerAuthenticator->registerHooks();
 	}
 }

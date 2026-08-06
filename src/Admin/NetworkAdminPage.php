@@ -28,6 +28,8 @@ final class NetworkAdminPage {
 	private const REVOKE_ACTION      = 'charter_oauth_network_revoke_site_grant';
 	private const REVOKE_ALL_ACTION  = 'charter_oauth_network_revoke_all_site_grants';
 	private const CONTAINMENT_ACTION = 'charter_oauth_network_set_containment';
+	private const ADOPT_KEY_ACTION   = 'charter_oauth_network_adopt_signing_key';
+	private const KEY_AUDIT_ACTION   = 'charter_oauth_network_reconcile_signing_key_audit';
 	private const SITES_PER_PAGE     = 50;
 	private const GRANTS_PER_PAGE    = 50;
 
@@ -47,6 +49,8 @@ final class NetworkAdminPage {
 		add_action( 'network_admin_edit_' . self::REVOKE_ACTION, array( $this, 'revokeGrant' ) );
 		add_action( 'network_admin_edit_' . self::REVOKE_ALL_ACTION, array( $this, 'revokeAllGrants' ) );
 		add_action( 'network_admin_edit_' . self::CONTAINMENT_ACTION, array( $this, 'setContainment' ) );
+		add_action( 'network_admin_edit_' . self::ADOPT_KEY_ACTION, array( $this, 'adoptSigningKey' ) );
+		add_action( 'network_admin_edit_' . self::KEY_AUDIT_ACTION, array( $this, 'reconcileSigningKeyAudit' ) );
 	}
 
 	/** Adds Charter beneath Network Settings only while network-activated. */
@@ -91,6 +95,7 @@ final class NetworkAdminPage {
 			<p><?php esc_html_e( 'Select one site to inspect or govern its own OAuth issuer. This screen does not create network clients, grants, credentials, or an OAuth issuer for the network.', 'charter' ); ?></p>
 			<?php $this->renderUpdatedNotice(); ?>
 			<?php $this->renderAllContainmentControls(); ?>
+			<?php $this->renderAllSigningKeyControls(); ?>
 
 			<h2><?php esc_html_e( 'Network sites', 'charter' ); ?></h2>
 			<?php if ( array() === $siteList ) : ?>
@@ -220,6 +225,61 @@ final class NetworkAdminPage {
 		exit;
 	}
 
+	/** Applies one selected-site or exact all-site signing-key adoption batch. */
+	public function adoptSigningKey(): never {
+		$this->requireNetworkOperator();
+		$scope   = self::postScalar( 'scope' );
+		$siteId  = absint( self::postScalar( 'site_id' ) );
+		$issuer  = self::postScalar( 'issuer' );
+		$binding = self::postScalar( 'binding_id' );
+		check_admin_referer( self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, $scope, $siteId, $issuer, $binding ) );
+
+		if ( '1' !== self::postScalar( 'confirm_action' ) || ! self::isBindingId( $binding ) ) {
+			wp_die( esc_html__( 'The explicit Charter key adoption request is invalid.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		if ( 'site' === $scope ) {
+			if ( ! $this->sites->adoptSigningKey( $siteId, $issuer, $binding, get_current_user_id(), time() ) ) {
+				wp_die( esc_html__( 'The selected site’s explicit Charter key replacement could not be adopted.', 'charter' ), '', array( 'response' => 400 ) );
+			}
+			$this->redirect( $siteId, 'signing_key_adopted' );
+		}
+
+		if ( 'all' !== $scope || 0 !== $siteId || '' !== $issuer ) {
+			wp_die( esc_html__( 'The network signing-key adoption scope is invalid.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		$counts = $this->sites->adoptAllSigningKeys( $binding, get_current_user_id(), time() );
+		wp_safe_redirect(
+			$this->settingsUrl(
+				0,
+				array(
+					'updated' => 'signing_key_all',
+					'changed' => $counts['changed'],
+					'skipped' => $counts['skipped'],
+					'pending' => $counts['pending'],
+					'failed'  => $counts['failed'],
+				)
+			)
+		);
+		exit;
+	}
+
+	/** Reconciles one selected site's exact already-applied adoption audit. */
+	public function reconcileSigningKeyAudit(): never {
+		$this->requireNetworkOperator();
+		$siteId  = absint( self::postScalar( 'site_id' ) );
+		$issuer  = self::postScalar( 'issuer' );
+		$binding = self::postScalar( 'binding_id' );
+		check_admin_referer( self::signingKeyNonceAction( self::KEY_AUDIT_ACTION, 'site', $siteId, $issuer, $binding ) );
+
+		if ( ! self::isBindingId( $binding ) || ! $this->sites->reconcileSigningKeyAudit( $siteId, $issuer, $binding ) ) {
+			wp_die( esc_html__( 'The selected site’s key-adoption audit event could not be reconciled.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		$this->redirect( $siteId, 'signing_key_reconciled' );
+	}
+
 	/**
 	 * Renders one selected site's lifecycle, grants, and own event ledger.
 	 *
@@ -243,8 +303,13 @@ final class NetworkAdminPage {
 		<?php else : ?>
 			<p><?php /* translators: %s: Exact selected site issuer and resource. */ echo esc_html( sprintf( __( 'Exact issuer and default resource: %s', 'charter' ), $identity->issuer() ) ); ?></p>
 			<p><?php /* translators: 1: Current containment mode, 2: Last transition actor, 3: Audit state. */ echo esc_html( sprintf( __( 'Containment mode: %1$s. Last actor: %2$s. Audit: %3$s.', 'charter' ), $snapshot->containmentMode(), '' === $snapshot->containmentActor() ? __( 'Default', 'charter' ) : $snapshot->containmentActor(), $snapshot->containmentAuditPending() ? __( 'Pending reconciliation', 'charter' ) : __( 'Recorded', 'charter' ) ) ); ?></p>
+			<p><?php /* translators: 1: Signing-key source, 2: Key status, 3: Explicit generation, 4: Replacement adoption count, 5: Audit state. */ echo esc_html( sprintf( __( 'Signing key: source %1$s; status %2$s; generation %3$d; replacements adopted %4$d; audit %5$s.', 'charter' ), $snapshot->signingKeySource(), $snapshot->signingKeyStatus(), $snapshot->signingKeyGeneration(), $snapshot->signingKeyAdoptionCount(), $snapshot->signingKeyAuditPending() ? __( 'Pending reconciliation', 'charter' ) : __( 'Recorded', 'charter' ) ) ); ?></p>
+			<?php if ( $snapshot->signingKeyUsesDatabaseFallback() ) : ?>
+				<p class="notice notice-warning inline"><?php esc_html_e( 'This issuer uses database-backed WordPress fallback secret material and remains operational.', 'charter' ); ?></p>
+			<?php endif; ?>
 			<?php if ( SiteState::ENABLED === $snapshot->state() ) : ?>
 				<?php $this->renderSelectedContainmentControls( $snapshot->siteId(), $identity->issuer() ); ?>
+				<?php $this->renderSelectedSigningKeyControls( $snapshot, $identity->issuer() ); ?>
 			<?php endif; ?>
 			<?php if ( SiteState::PREPARED === $snapshot->state() ) : ?>
 				<?php $this->renderEnableForm( $snapshot->siteId(), $identity->issuer() ); ?>
@@ -297,6 +362,28 @@ final class NetworkAdminPage {
 		$this->renderContainmentForm( 'all', 0, '', EmergencyContainment::LOCKDOWN, __( 'Lock down all enabled issuers', 'charter' ), __( 'Reject Charter Bearer access and pause issuance independently on every enabled site issuer.', 'charter' ), 'delete' );
 	}
 
+	/** Renders one exact network snapshot-bound signing-key adoption batch. */
+	private function renderAllSigningKeyControls(): void {
+		$batch = $this->sites->signingKeyBatch();
+		?>
+		<h2><?php esc_html_e( 'Network signing-key lifecycle', 'charter' ); ?></h2>
+		<p><?php esc_html_e( 'Each adoption or audit reconciliation runs sequentially inside one enabled site issuer and restores the original site after every transition. WordPress-derived sites never require adoption.', 'charter' ); ?></p>
+		<?php if ( 0 === $batch['actionable'] ) : ?>
+			<p><?php esc_html_e( 'No enabled site issuer currently requires explicit-key adoption or audit reconciliation.', 'charter' ); ?></p>
+		<?php else : ?>
+			<form method="post" action="<?php echo esc_url( $this->actionUrl( self::ADOPT_KEY_ACTION ) ); ?>">
+				<input type="hidden" name="scope" value="all">
+				<input type="hidden" name="site_id" value="0">
+				<input type="hidden" name="issuer" value="">
+				<input type="hidden" name="binding_id" value="<?php echo esc_attr( $batch['batch_id'] ); ?>">
+				<?php wp_nonce_field( self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, 'all', 0, '', $batch['batch_id'] ) ); ?>
+				<label><input type="checkbox" name="confirm_action" value="1" required> <?php /* translators: %d: Exact number of actionable site issuers in the current batch. */ echo esc_html( sprintf( _n( 'Adopt or reconcile the exact current explicit-key transition for %d isolated site issuer.', 'Adopt or reconcile the exact current explicit-key transitions for %d isolated site issuers.', $batch['actionable'], 'charter' ), $batch['actionable'] ) ); ?></label>
+				<?php submit_button( __( 'Apply exact network key batch', 'charter' ), 'delete', 'submit', false ); ?>
+			</form>
+		<?php endif; ?>
+		<?php
+	}
+
 	/**
 	 * Renders emergency controls for one exact selected issuer.
 	 *
@@ -311,6 +398,47 @@ final class NetworkAdminPage {
 		$this->renderContainmentForm( 'site', $siteId, $issuer, EmergencyContainment::RESUMED, __( 'Resume selected issuer', 'charter' ), __( 'Resume issuance and Charter Bearer access for only this exact issuer.', 'charter' ), 'primary' );
 		$this->renderContainmentForm( 'site', $siteId, $issuer, EmergencyContainment::ISSUANCE_PAUSED, __( 'Pause selected issuer', 'charter' ), __( 'Pause issuance for only this exact issuer while existing access tokens remain usable.', 'charter' ), 'secondary' );
 		$this->renderContainmentForm( 'site', $siteId, $issuer, EmergencyContainment::LOCKDOWN, __( 'Lock down selected issuer', 'charter' ), __( 'Pause issuance and reject Charter Bearer access for only this exact issuer.', 'charter' ), 'delete' );
+	}
+
+	/**
+	 * Renders exact mismatch- or audit-bound controls for one selected issuer.
+	 *
+	 * @param NetworkSiteSnapshot $snapshot Selected-site projection.
+	 * @param string              $issuer Exact selected issuer.
+	 */
+	private function renderSelectedSigningKeyControls( NetworkSiteSnapshot $snapshot, string $issuer ): void {
+		$mismatchId   = $snapshot->signingKeyMismatchId();
+		$transitionId = $snapshot->signingKeyTransitionId();
+		if ( ! is_string( $mismatchId ) && ( ! $snapshot->signingKeyAuditPending() || ! is_string( $transitionId ) ) ) {
+			return;
+		}
+		?>
+		<h3><?php esc_html_e( 'Selected-site signing-key action', 'charter' ); ?></h3>
+		<?php if ( $snapshot->signingKeyAuditPending() && is_string( $transitionId ) ) : ?>
+			<?php if ( is_string( $mismatchId ) ) : ?>
+				<p class="notice notice-error inline"><?php esc_html_e( 'Credential operations remain blocked by a newer mismatch. Reconcile the preceding exact adoption audit before adopting another replacement.', 'charter' ); ?></p>
+			<?php endif; ?>
+			<p class="notice notice-warning inline"><?php esc_html_e( 'The explicit replacement is active, but its secret-free site audit event is pending reconciliation.', 'charter' ); ?></p>
+			<form method="post" action="<?php echo esc_url( $this->actionUrl( self::KEY_AUDIT_ACTION ) ); ?>">
+				<input type="hidden" name="site_id" value="<?php echo esc_attr( (string) $snapshot->siteId() ); ?>">
+				<input type="hidden" name="issuer" value="<?php echo esc_attr( $issuer ); ?>">
+				<input type="hidden" name="binding_id" value="<?php echo esc_attr( $transitionId ); ?>">
+				<?php wp_nonce_field( self::signingKeyNonceAction( self::KEY_AUDIT_ACTION, 'site', $snapshot->siteId(), $issuer, $transitionId ) ); ?>
+				<?php submit_button( __( 'Retry selected issuer key audit', 'charter' ), 'secondary', 'submit', false ); ?>
+			</form>
+		<?php elseif ( is_string( $mismatchId ) ) : ?>
+			<p class="notice notice-error inline"><?php esc_html_e( 'Credential issuance and Charter credential validation are blocked for this issuer until the prior explicit key is restored or this exact replacement is adopted.', 'charter' ); ?></p>
+			<form method="post" action="<?php echo esc_url( $this->actionUrl( self::ADOPT_KEY_ACTION ) ); ?>">
+				<input type="hidden" name="scope" value="site">
+				<input type="hidden" name="site_id" value="<?php echo esc_attr( (string) $snapshot->siteId() ); ?>">
+				<input type="hidden" name="issuer" value="<?php echo esc_attr( $issuer ); ?>">
+				<input type="hidden" name="binding_id" value="<?php echo esc_attr( $mismatchId ); ?>">
+				<?php wp_nonce_field( self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, 'site', $snapshot->siteId(), $issuer, $mismatchId ) ); ?>
+				<label><input type="checkbox" name="confirm_action" value="1" required> <?php esc_html_e( 'Adopt this exact configured replacement for only this exact site issuer. Earlier credentials remain unusable; non-credential OAuth state is preserved.', 'charter' ); ?></label>
+				<?php submit_button( __( 'Adopt selected issuer key', 'charter' ), 'delete', 'submit', false ); ?>
+			</form>
+		<?php endif; ?>
+		<?php
 	}
 
 	/**
@@ -525,10 +653,20 @@ final class NetworkAdminPage {
 				absint( self::getScalar( 'pending' ) ),
 				absint( self::getScalar( 'failed' ) )
 			),
+			'signing_key_adopted' => __( 'The selected site’s exact explicit Charter key replacement was adopted.', 'charter' ),
+			'signing_key_reconciled' => __( 'The selected site’s key-adoption audit event was reconciled.', 'charter' ),
+			'signing_key_all' => sprintf(
+				/* translators: 1: Changed sites, 2: Skipped sites, 3: Audit-pending sites, 4: Failed sites. */
+				__( 'Network signing-key work finished sequentially: %1$d adopted or reconciled, %2$d sites skipped, %3$d replacements active with audit pending, %4$d failed.', 'charter' ),
+				absint( self::getScalar( 'changed' ) ),
+				absint( self::getScalar( 'skipped' ) ),
+				absint( self::getScalar( 'pending' ) ),
+				absint( self::getScalar( 'failed' ) )
+			),
 			default         => '',
 		};
 		if ( '' !== $message ) {
-			$noticeClass = in_array( $updated, array( 'containment_pending', 'containment_all' ), true )
+			$noticeClass = in_array( $updated, array( 'containment_pending', 'containment_all', 'signing_key_all' ), true )
 				&& ( 'containment_pending' === $updated || 0 < absint( self::getScalar( 'pending' ) ) || 0 < absint( self::getScalar( 'failed' ) ) )
 				? 'notice-warning'
 				: 'notice-success';
@@ -593,6 +731,28 @@ final class NetworkAdminPage {
 	 */
 	private static function containmentNonceAction( string $scope, string $mode, int $siteId, string $issuer ): string {
 		return self::nonceAction( self::CONTAINMENT_ACTION, (string) get_current_network_id(), $scope, (string) $siteId, $issuer, $mode );
+	}
+
+	/**
+	 * Returns a network, scope, site, issuer, and mismatch-bound nonce action.
+	 *
+	 * @param string $action Fixed signing-key action.
+	 * @param string $scope Exact site or all-sites scope.
+	 * @param int    $siteId Selected site identifier, or zero for all.
+	 * @param string $issuer Exact selected issuer, or empty for all.
+	 * @param string $bindingId Exact mismatch, transition, or batch binding.
+	 */
+	private static function signingKeyNonceAction( string $action, string $scope, int $siteId, string $issuer, string $bindingId ): string {
+		return self::nonceAction( $action, (string) get_current_network_id(), $scope, (string) $siteId, $issuer, $bindingId );
+	}
+
+	/**
+	 * Validates one non-secret mismatch, transition, or exact batch binding.
+	 *
+	 * @param mixed $value Candidate binding.
+	 */
+	private static function isBindingId( mixed $value ): bool {
+		return is_string( $value ) && 1 === preg_match( '/^[a-f0-9]{64}$/D', $value );
 	}
 
 	/**

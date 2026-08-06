@@ -357,7 +357,7 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 	private function settingsPage(): SettingsPage {
 		$plugin = Plugin::boot();
 
-		return new SettingsPage( $plugin->siteState(), $plugin->clients(), $plugin->credentials(), $plugin->clientGovernance(), $plugin->grantGovernance(), $plugin->audit(), $plugin->containment() );
+		return new SettingsPage( $plugin->siteState(), $plugin->clients(), $plugin->credentials(), $plugin->clientGovernance(), $plugin->grantGovernance(), $plugin->audit(), $plugin->containment(), $plugin->signingKeys() );
 	}
 
 	/**

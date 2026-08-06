@@ -33,13 +33,15 @@ final class TokenService {
 	 * @param CredentialStore      $credentials Grant and credential persistence.
 	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
 	 * @param EmergencyContainment $containment Issuer-local emergency mode.
+	 * @param SigningKeyLifecycle  $signingKeys Issuer-local credential-key lifecycle.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly ClientRegistry $clients,
 		private readonly CredentialStore $credentials,
 		private readonly AccessPolicyProvider $accessPolicy,
-		private readonly EmergencyContainment $containment
+		private readonly EmergencyContainment $containment,
+		private readonly SigningKeyLifecycle $signingKeys
 	) {
 	}
 
@@ -76,7 +78,7 @@ final class TokenService {
 		}
 		if (
 			in_array( $grantType, array( Client::GRANT_AUTHORIZATION_CODE, Client::GRANT_REFRESH_TOKEN ), true )
-			&& ! $this->containment->issuanceAllowed()
+			&& ( ! $this->containment->issuanceAllowed() || ! $this->signingKeys->credentialOperationsAllowed() )
 		) {
 			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
@@ -129,6 +131,9 @@ final class TokenService {
 		}
 		if ( is_string( $hint ) && in_array( $hint, self::REVOCABLE_TOKEN_TYPES, true ) ) {
 			$types = array_values( array_unique( array_merge( array( $hint ), $types ) ) );
+		}
+		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
+			return;
 		}
 
 		foreach ( $types as $type ) {
@@ -281,6 +286,9 @@ final class TokenService {
 			throw new ProtocolException( 'invalid_token', 'The access token is invalid.', 401 );
 		}
 		if ( ! $this->containment->bearerAllowed() ) {
+			throw new ProtocolException( 'invalid_token', 'The access token is invalid.', 401 );
+		}
+		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
 			throw new ProtocolException( 'invalid_token', 'The access token is invalid.', 401 );
 		}
 

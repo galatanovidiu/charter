@@ -15,6 +15,7 @@ use GalatanOvidiu\Charter\OAuth\CredentialHasher;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
+use GalatanOvidiu\Charter\Plugin;
 use GalatanOvidiu\Charter\Schema;
 use GalatanOvidiu\Charter\Security\AuditLog;
 use WP_UnitTestCase;
@@ -65,7 +66,8 @@ final class SiteAdministratorGrantIsolationTest extends WP_UnitTestCase {
 	public function testGrantGovernanceRemainsInsideCurrentSiteAndExactIssuer(): void {
 		$firstIssuer  = 'https://grant-admin-one.example.org';
 		$secondIssuer = 'https://grant-admin-two.example.org';
-		$store        = new CredentialStore( new CredentialHasher() );
+		$plugin       = Plugin::boot();
+		$store        = new CredentialStore( new CredentialHasher( $plugin->signingKeys() ) );
 
 		switch_to_blog( self::$firstSiteId );
 		try {

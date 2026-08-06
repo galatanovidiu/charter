@@ -39,13 +39,15 @@ final class DynamicRegistrationService {
 	 * @param RateLimiter          $rateLimiter Abuse counters.
 	 * @param AuditLog             $audit Security ledger.
 	 * @param EmergencyContainment $containment Issuer-local emergency mode.
+	 * @param SigningKeyLifecycle  $signingKeys Issuer-local credential-key lifecycle.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly ClientRegistry $clients,
 		private readonly RateLimiter $rateLimiter,
 		private readonly AuditLog $audit,
-		private readonly EmergencyContainment $containment
+		private readonly EmergencyContainment $containment,
+		private readonly SigningKeyLifecycle $signingKeys
 	) {
 	}
 
@@ -83,6 +85,9 @@ final class DynamicRegistrationService {
 			throw new DynamicRegistrationException( 'temporarily_unavailable', 'Dynamic registration is unavailable.', 503 );
 		}
 		if ( ! $this->containment->issuanceAllowed() ) {
+			throw new DynamicRegistrationException( 'temporarily_unavailable', 'Dynamic registration is temporarily unavailable.', 503 );
+		}
+		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
 			throw new DynamicRegistrationException( 'temporarily_unavailable', 'Dynamic registration is temporarily unavailable.', 503 );
 		}
 		if ( ! self::isEnabled() ) {

@@ -12,11 +12,15 @@ namespace GalatanOvidiu\Charter\Tests\Integration\Multisite;
 use GalatanOvidiu\Charter\Admin\NetworkAdminPage;
 use GalatanOvidiu\Charter\Admin\NetworkSiteControl;
 use GalatanOvidiu\Charter\Cli\ContainmentCommand;
+use GalatanOvidiu\Charter\Cli\SigningKeyCommand;
 use GalatanOvidiu\Charter\OAuth\AuthorizationRequest;
 use GalatanOvidiu\Charter\OAuth\Client;
+use GalatanOvidiu\Charter\OAuth\CredentialHasher;
 use GalatanOvidiu\Charter\OAuth\CredentialStore;
 use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
+use GalatanOvidiu\Charter\OAuth\GrantGovernance;
+use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\Plugin;
 use GalatanOvidiu\Charter\Schema;
 use GalatanOvidiu\Charter\Security\AuditEvent;
@@ -69,7 +73,7 @@ final class NetworkAdminControlPlaneTest extends WP_UnitTestCase {
 	/** Creates sites whose exact prefixes have no stale custom tables. */
 	public static function set_up_before_class(): void {
 		parent::set_up_before_class();
-		foreach ( array( 'selected', 'sibling', 'grants', 'grants-sibling', 'page', 'containment-one', 'containment-two', 'containment-skipped' ) as $label ) {
+		foreach ( array( 'selected', 'sibling', 'grants', 'grants-sibling', 'page', 'containment-one', 'containment-two', 'containment-skipped', 'signing-one', 'signing-two' ) as $label ) {
 			self::$operableSiteIds[] = self::createFreshFixtureSite( $label );
 		}
 	}
@@ -337,11 +341,120 @@ final class NetworkAdminControlPlaneTest extends WP_UnitTestCase {
 		$this->assertCredentialActive( $secondId, $secondIssuer, $secondGrant['credential'] );
 	}
 
+	/** Verifies explicit-key Network Admin batches and WP-CLI remain issuer-local. */
+	public function testSigningKeyOrchestrationIsExactSequentialAndSiteIsolated(): void {
+		$firstId      = self::$operableSiteIds[8];
+		$secondId     = self::$operableSiteIds[9];
+		$originBlog   = self::currentBlogId();
+		$keyPhase     = 'a';
+		$plugin       = Plugin::boot();
+		$signingKeys  = new SigningKeyLifecycle(
+			$plugin->siteState(),
+			$plugin->audit(),
+			static function () use ( &$keyPhase ): array {
+				return array(
+					'source'            => SigningKeyLifecycle::SOURCE_EXPLICIT,
+					'root'              => hash( 'sha256', 'charter-multisite-explicit-key:' . $keyPhase ),
+					'database_fallback' => false,
+				);
+			}
+		);
+		$credentials  = new CredentialStore( new CredentialHasher( $signingKeys ) );
+		$control      = new NetworkSiteControl( $plugin->siteState(), $credentials, new GrantGovernance( $credentials, $plugin->audit() ), $plugin->audit(), $plugin->containment(), $signingKeys );
+		$firstIssuer  = $this->enableSite( $control, $firstId, 5000 );
+		$secondIssuer = $this->enableSite( $control, $secondId, 5010 );
+		self::assertSame( SigningKeyLifecycle::STATUS_MATCHING, $control->inspect( $firstId )?->signingKeyStatus() );
+		self::assertSame( SigningKeyLifecycle::STATUS_MATCHING, $control->inspect( $secondId )?->signingKeyStatus() );
+
+		$keyPhase       = 'b';
+		$firstMismatch  = $control->inspect( $firstId );
+		$secondMismatch = $control->inspect( $secondId );
+		self::assertNotNull( $firstMismatch );
+		self::assertNotNull( $secondMismatch );
+		self::assertSame( SigningKeyLifecycle::STATUS_MISMATCH, $firstMismatch->signingKeyStatus() );
+		self::assertSame( SigningKeyLifecycle::STATUS_MISMATCH, $secondMismatch->signingKeyStatus() );
+		self::assertSame( 0, $secondMismatch->signingKeyGeneration() );
+		$mismatchId = $firstMismatch->signingKeyMismatchId();
+		self::assertIsString( $mismatchId );
+		self::assertFalse( $control->adoptSigningKey( $firstId, $secondIssuer, $mismatchId, $this->actorUserId, 5020 ) );
+		self::assertSame( $originBlog, self::currentBlogId() );
+
+		$page        = new NetworkAdminPage( $control );
+		$_GET        = array( 'site_id' => (string) $firstId );
+		$nonceAction = self::nonceAction( 'charter_oauth_network_adopt_signing_key', (string) get_current_network_id(), 'site', (string) $firstId, $firstIssuer, $mismatchId );
+		ob_start();
+		$page->render();
+		$html = (string) ob_get_clean();
+		self::assertStringContainsString( 'Signing key: source explicit; status mismatch', $html );
+		self::assertStringContainsString( wp_create_nonce( $nonceAction ), $html );
+		self::assertStringContainsString( 'name="confirm_action"', $html );
+
+		$_POST    = array(
+			'scope'          => 'site',
+			'site_id'        => (string) $firstId,
+			'issuer'         => $firstIssuer,
+			'binding_id'     => $mismatchId,
+			'confirm_action' => '1',
+			'_wpnonce'       => 'invalid-nonce',
+		);
+		$_REQUEST = $_POST; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- The production handler verifies the synchronized request.
+		$this->withDieHandler( static fn () => $page->adoptSigningKey(), 'link you followed has expired' );
+
+		$_POST    = array(
+			'scope'      => 'site',
+			'site_id'    => (string) $firstId,
+			'issuer'     => $firstIssuer,
+			'binding_id' => $mismatchId,
+			'_wpnonce'   => wp_create_nonce( $nonceAction ),
+		);
+		$_REQUEST = $_POST; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- The production handler verifies the synchronized request.
+		$this->withDieHandler( static fn () => $page->adoptSigningKey(), 'adoption request is invalid' );
+		self::assertTrue( $control->adoptSigningKey( $firstId, $firstIssuer, $mismatchId, $this->actorUserId, 5021 ) );
+		self::assertSame( SigningKeyLifecycle::STATUS_MATCHING, $control->inspect( $firstId )?->signingKeyStatus() );
+		self::assertSame( SigningKeyLifecycle::STATUS_MISMATCH, $control->inspect( $secondId )?->signingKeyStatus() );
+		self::assertSame( 1, $control->inspect( $firstId )?->signingKeyGeneration() );
+		self::assertSame( 0, $control->inspect( $secondId )?->signingKeyGeneration() );
+		self::assertSame( $originBlog, self::currentBlogId() );
+
+		$keyPhase   = 'c';
+		$staleBatch = $control->signingKeyBatch();
+		self::assertSame( 2, $staleBatch['actionable'] );
+		$keyPhase = 'd';
+		self::assertSame( 1, $control->adoptAllSigningKeys( $staleBatch['batch_id'], $this->actorUserId, 5030 )['failed'] );
+		self::assertSame( 1, $control->inspect( $firstId )?->signingKeyGeneration() );
+		self::assertSame( 0, $control->inspect( $secondId )?->signingKeyGeneration() );
+
+		$currentBatch = $control->signingKeyBatch();
+		$batchResult  = $control->adoptAllSigningKeys( $currentBatch['batch_id'], $this->actorUserId, 5031 );
+		self::assertSame( 2, $batchResult['changed'] );
+		self::assertSame( 0, $batchResult['pending'] );
+		self::assertSame( 0, $batchResult['failed'] );
+		self::assertSame( 2, $control->inspect( $firstId )?->signingKeyGeneration() );
+		self::assertSame( 1, $control->inspect( $secondId )?->signingKeyGeneration() );
+		self::assertSame( $originBlog, self::currentBlogId() );
+
+		$keyPhase = 'e';
+		$command  = new SigningKeyCommand( $signingKeys, $plugin->siteState() );
+		$status   = $command->statusForSites( array( $secondId, $firstId ) );
+		self::assertSame( array( $secondId, $firstId ), array_keys( $status ) );
+		self::assertSame( SigningKeyLifecycle::STATUS_MISMATCH, $status[ $firstId ]['status'] ?? null );
+		self::assertSame( SigningKeyLifecycle::STATUS_MISMATCH, $status[ $secondId ]['status'] ?? null );
+		$cliResult = $command->adoptForSites( array( $secondId, $firstId ), 5040 );
+		self::assertTrue( $cliResult[ $firstId ]['adopted'] ?? false );
+		self::assertTrue( $cliResult[ $secondId ]['adopted'] ?? false );
+		self::assertSame( 3, $cliResult[ $firstId ]['generation'] ?? null );
+		self::assertSame( 2, $cliResult[ $secondId ]['generation'] ?? null );
+		$afterCli = $command->statusForSites( array( $firstId, $secondId ) );
+		self::assertSame( SigningKeyLifecycle::ACTOR_WP_CLI, $afterCli[ $firstId ]['actor'] ?? null );
+		self::assertSame( SigningKeyLifecycle::ACTOR_WP_CLI, $afterCli[ $secondId ]['actor'] ?? null );
+		self::assertSame( $originBlog, self::currentBlogId() );
+	}
+
 	/** Returns the production network service composed over current-site services. */
 	private function control(): NetworkSiteControl {
 		$plugin = Plugin::boot();
 
-		return new NetworkSiteControl( $plugin->siteState(), $plugin->credentials(), $plugin->grantGovernance(), $plugin->audit(), $plugin->containment() );
+		return new NetworkSiteControl( $plugin->siteState(), $plugin->credentials(), $plugin->grantGovernance(), $plugin->audit(), $plugin->containment(), $plugin->signingKeys() );
 	}
 
 	/**

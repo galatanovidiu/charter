@@ -17,6 +17,7 @@ use GalatanOvidiu\Charter\OAuth\DynamicRegistrationService;
 use GalatanOvidiu\Charter\OAuth\EmergencyContainment;
 use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
+use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\Security\AuditLog;
 use GalatanOvidiu\Charter\Site\SiteState;
 use InvalidArgumentException;
@@ -30,6 +31,8 @@ use RuntimeException;
 final class SettingsPage {
 
 	private const CONTAINMENT_ACTION = 'charter_oauth_set_emergency_mode';
+	private const ADOPT_KEY_ACTION   = 'charter_oauth_adopt_signing_key';
+	private const KEY_AUDIT_ACTION   = 'charter_oauth_reconcile_signing_key_audit';
 
 	/**
 	 * Creates the settings screen.
@@ -43,6 +46,7 @@ final class SettingsPage {
 	 * @param GrantGovernance      $grantGovernance Administrator grant governance.
 	 * @param AuditLog             $audit Security event ledger.
 	 * @param EmergencyContainment $containment Issuer-local emergency mode.
+	 * @param SigningKeyLifecycle  $signingKeys Issuer-local credential-key lifecycle.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
@@ -51,7 +55,8 @@ final class SettingsPage {
 		private readonly ClientGovernance $governance,
 		private readonly GrantGovernance $grantGovernance,
 		private readonly AuditLog $audit,
-		private readonly EmergencyContainment $containment
+		private readonly EmergencyContainment $containment,
+		private readonly SigningKeyLifecycle $signingKeys
 	) {
 	}
 
@@ -70,6 +75,8 @@ final class SettingsPage {
 		add_action( 'admin_post_charter_oauth_revoke_site_grant', array( $this, 'revokeGrant' ) );
 		add_action( 'admin_post_charter_oauth_revoke_all_site_grants', array( $this, 'revokeAllGrants' ) );
 		add_action( 'admin_post_' . self::CONTAINMENT_ACTION, array( $this, 'setContainmentMode' ) );
+		add_action( 'admin_post_' . self::ADOPT_KEY_ACTION, array( $this, 'adoptSigningKey' ) );
+		add_action( 'admin_post_' . self::KEY_AUDIT_ACTION, array( $this, 'reconcileSigningKeyAudit' ) );
 		add_action( 'admin_notices', array( $this, 'renderLockdownNotice' ) );
 	}
 
@@ -110,6 +117,11 @@ final class SettingsPage {
 			<?php if ( 'pending' === self::getScalar( 'containment_audit' ) ) : ?>
 				<div class="notice notice-warning"><p><?php esc_html_e( 'The requested OAuth emergency mode is active, but its audit event is pending reconciliation. Retry the same mode after restoring the audit ledger.', 'charter' ); ?></p></div>
 			<?php endif; ?>
+			<?php if ( 'adopted' === self::getScalar( 'signing_key' ) ) : ?>
+				<div class="notice notice-success"><p><?php esc_html_e( 'The exact current explicit Charter key replacement was adopted for this site issuer. Credentials from earlier explicit-key generations remain unusable.', 'charter' ); ?></p></div>
+			<?php elseif ( 'reconciled' === self::getScalar( 'signing_key' ) ) : ?>
+				<div class="notice notice-success"><p><?php esc_html_e( 'The pending explicit-key adoption audit event was reconciled.', 'charter' ); ?></p></div>
+			<?php endif; ?>
 			<p><?php /* translators: %s: Current OAuth lifecycle state. */ echo esc_html( sprintf( __( 'State: %s', 'charter' ), ucfirst( $this->siteState->state() ) ) ); ?></p>
 			<?php if ( null === $identity ) : ?>
 				<div class="notice notice-error"><p><?php esc_html_e( 'The site needs a supported canonical bare-origin public URL before OAuth can be prepared.', 'charter' ); ?></p></div>
@@ -132,6 +144,7 @@ final class SettingsPage {
 				<?php endif; ?>
 
 				<?php if ( $this->siteState->isEnabled() ) : ?>
+					<?php $this->renderSigningKeyControls( $identity->issuer() ); ?>
 					<?php $this->renderContainmentControls( $identity->issuer() ); ?>
 				<?php endif; ?>
 
@@ -404,6 +417,44 @@ final class SettingsPage {
 		exit;
 	}
 
+	/** Adopts one exact current explicit-key mismatch for this issuer. */
+	public function adoptSigningKey(): never {
+		$this->requireAdministrator();
+		$identity   = $this->requireIdentity();
+		$mismatchId = self::postScalar( 'mismatch_id' );
+		check_admin_referer( self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, $identity->issuer(), $mismatchId ) );
+
+		if (
+			'1' !== self::postScalar( 'confirm_action' )
+			|| ! self::isBindingId( $mismatchId )
+			|| ! $this->signingKeys->adoptReplacement( SigningKeyLifecycle::ACTOR_SITE_ADMIN, get_current_user_id(), time(), $identity->issuer(), $mismatchId )
+		) {
+			wp_die( esc_html__( 'The explicit Charter key replacement could not be adopted.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		$redirect = add_query_arg( 'signing_key', 'adopted', $this->settingsUrl() );
+		if ( $this->signingKeys->snapshot()['audit_pending'] ) {
+			$redirect = add_query_arg( 'signing_key_audit', 'pending', $redirect );
+		}
+		wp_safe_redirect( $redirect );
+		exit;
+	}
+
+	/** Reconciles one exact already-applied key-adoption audit transition. */
+	public function reconcileSigningKeyAudit(): never {
+		$this->requireAdministrator();
+		$identity     = $this->requireIdentity();
+		$transitionId = self::postScalar( 'transition_id' );
+		check_admin_referer( self::signingKeyNonceAction( self::KEY_AUDIT_ACTION, $identity->issuer(), $transitionId ) );
+
+		if ( ! self::isBindingId( $transitionId ) || ! $this->signingKeys->reconcilePendingAudit( $identity->issuer(), $transitionId ) ) {
+			wp_die( esc_html__( 'The explicit-key adoption audit event could not be reconciled.', 'charter' ), '', array( 'response' => 400 ) );
+		}
+
+		wp_safe_redirect( add_query_arg( 'signing_key', 'reconciled', $this->settingsUrl() ) );
+		exit;
+	}
+
 	/** Shows a persistent warning throughout Site Admin while lockdown is active. */
 	public function renderLockdownNotice(): void {
 		if ( ! current_user_can( 'manage_options' ) || ! $this->siteState->isEnabled() || EmergencyContainment::LOCKDOWN !== $this->containment->mode() ) {
@@ -411,6 +462,55 @@ final class SettingsPage {
 		}
 		?>
 		<div class="notice notice-error"><p><?php esc_html_e( 'Charter OAuth lockdown is active: credential issuance and every Charter Bearer request are blocked until an administrator explicitly resumes operation.', 'charter' ); ?></p></div>
+		<?php
+	}
+
+	/**
+	 * Renders the current secret-free key source and exact adoption control.
+	 *
+	 * @param string $issuer Exact current issuer.
+	 */
+	private function renderSigningKeyControls( string $issuer ): void {
+		$snapshot     = $this->signingKeys->snapshot();
+		$mismatchId   = $snapshot['mismatch_id'];
+		$transitionId = $snapshot['transition_id'];
+		$changedAt    = is_int( $snapshot['changed_at'] ) ? $this->formatTimestamp( $snapshot['changed_at'] ) : __( 'Not applicable', 'charter' );
+		$actor        = '' === $snapshot['actor'] ? __( 'Automatic WordPress material', 'charter' ) : $snapshot['actor'];
+		?>
+		<h2><?php esc_html_e( 'Credential signing key', 'charter' ); ?></h2>
+		<p><?php /* translators: 1: Key source, 2: Key status, 3: Explicit generation, 4: Replacement adoption count, 5: Last state time, 6: Last actor. */ echo esc_html( sprintf( __( 'Source: %1$s. Status: %2$s. Generation: %3$d. Explicit replacements adopted: %4$d. Last state change: %5$s. Actor: %6$s.', 'charter' ), $snapshot['source'], $snapshot['status'], $snapshot['generation'], $snapshot['adoption_count'], $changedAt, $actor ) ); ?></p>
+		<?php if ( SigningKeyLifecycle::SOURCE_WORDPRESS === $snapshot['source'] ) : ?>
+			<p><?php esc_html_e( 'Charter automatically uses the current effective auth, secure_auth, logged_in, and nonce WordPress salt values. A WordPress salt change invalidates prior Charter credentials while new authorization and issuance continue without adoption.', 'charter' ); ?></p>
+			<?php if ( $snapshot['database_fallback'] ) : ?>
+				<p class="notice notice-warning inline"><?php esc_html_e( 'WordPress is supplying at least part of this material from database-backed fallback state. OAuth remains available.', 'charter' ); ?></p>
+			<?php endif; ?>
+		<?php elseif ( SigningKeyLifecycle::STATUS_MISMATCH === $snapshot['status'] && $snapshot['audit_pending'] ) : ?>
+			<p class="notice notice-error inline"><?php esc_html_e( 'The current explicit key still mismatches this issuer, and the preceding adopted transition has a pending audit event. Credential operations remain blocked; reconcile that exact audit event before adopting another replacement.', 'charter' ); ?></p>
+		<?php elseif ( SigningKeyLifecycle::STATUS_MISMATCH === $snapshot['status'] && is_string( $mismatchId ) && self::isBindingId( $mismatchId ) ) : ?>
+			<p class="notice notice-error inline"><?php esc_html_e( 'The current CHARTER_SECRET_KEY does not match this issuer’s accepted fingerprint. Credential issuance and Charter credential validation are blocked without changing OAuth state. Restoring the prior value restores operation.', 'charter' ); ?></p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="<?php echo esc_attr( self::ADOPT_KEY_ACTION ); ?>">
+				<input type="hidden" name="mismatch_id" value="<?php echo esc_attr( $mismatchId ); ?>">
+				<?php wp_nonce_field( self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, $issuer, $mismatchId ) ); ?>
+				<label><input type="checkbox" name="confirm_action" value="1" required> <?php esc_html_e( 'I confirm this exact configured replacement for this exact site issuer. Earlier Charter credentials will remain unusable; registrations, consents, grants, and audit history will be preserved.', 'charter' ); ?></label>
+				<?php submit_button( __( 'Adopt explicit key replacement', 'charter' ), 'delete', 'submit', false ); ?>
+			</form>
+		<?php elseif ( in_array( $snapshot['status'], array( SigningKeyLifecycle::STATUS_INVALID, SigningKeyLifecycle::STATUS_UNAVAILABLE, SigningKeyLifecycle::STATUS_UNESTABLISHED ), true ) ) : ?>
+			<p class="notice notice-error inline"><?php esc_html_e( 'The explicit Charter signing-key state is unavailable. Credential issuance and Charter credential validation remain blocked.', 'charter' ); ?></p>
+		<?php else : ?>
+			<p><?php esc_html_e( 'The current explicit CHARTER_SECRET_KEY matches this issuer’s accepted non-secret fingerprint.', 'charter' ); ?></p>
+		<?php endif; ?>
+
+		<?php if ( $snapshot['audit_pending'] && is_string( $transitionId ) && self::isBindingId( $transitionId ) ) : ?>
+			<p class="notice notice-warning inline"><?php esc_html_e( 'The adopted replacement is active, but its secret-free audit event is pending reconciliation.', 'charter' ); ?></p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="<?php echo esc_attr( self::KEY_AUDIT_ACTION ); ?>">
+				<input type="hidden" name="transition_id" value="<?php echo esc_attr( $transitionId ); ?>">
+				<?php wp_nonce_field( self::signingKeyNonceAction( self::KEY_AUDIT_ACTION, $issuer, $transitionId ) ); ?>
+				<?php submit_button( __( 'Retry key-adoption audit', 'charter' ), 'secondary', 'submit', false ); ?>
+			</form>
+		<?php endif; ?>
+		<p><?php esc_html_e( 'Charter does not back up, export, escrow, recover, overlap, or migrate signing keys or credentials.', 'charter' ); ?></p>
 		<?php
 	}
 
@@ -658,6 +758,26 @@ final class SettingsPage {
 	 */
 	private static function containmentNonceAction( string $issuer, string $mode ): string {
 		return self::CONTAINMENT_ACTION . ':' . hash( 'sha256', $issuer . "\0" . $mode );
+	}
+
+	/**
+	 * Returns an exact issuer-and-transition-bound signing-key nonce action.
+	 *
+	 * @param string $action Fixed signing-key action.
+	 * @param string $issuer Exact current issuer.
+	 * @param string $bindingId Exact mismatch or transition binding.
+	 */
+	private static function signingKeyNonceAction( string $action, string $issuer, string $bindingId ): string {
+		return $action . ':' . hash( 'sha256', $issuer . "\0" . $bindingId );
+	}
+
+	/**
+	 * Validates one non-secret mismatch or transition binding.
+	 *
+	 * @param mixed $value Candidate binding.
+	 */
+	private static function isBindingId( mixed $value ): bool {
+		return is_string( $value ) && 1 === preg_match( '/^[a-f0-9]{64}$/D', $value );
 	}
 
 	/**
