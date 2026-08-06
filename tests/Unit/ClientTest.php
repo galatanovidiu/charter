@@ -46,6 +46,21 @@ final class ClientTest extends TestCase {
 	}
 
 	/**
+	 * Verifies a portless localhost registration accepts only a runtime port change.
+	 *
+	 * @since 0.1.0
+	 */
+	public function testPortlessLocalhostRedirectAcceptsOnlyRuntimePortChange(): void {
+		$client = new Client( 'https://issuer.example', 'client', 'Client', array( 'http://localhost/callback?fixed=1' ) );
+
+		self::assertTrue( $client->allowsRedirectUri( 'http://localhost:3118/callback?fixed=1' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://localhost:3118/callback?fixed=2' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://127.0.0.1:3118/callback?fixed=1' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://app.localhost:3118/callback?fixed=1' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://localhost:0/callback?fixed=1' ) );
+	}
+
+	/**
 	 * Verifies public clients have no secret and may explicitly declare refresh.
 	 *
 	 * @since 0.1.0

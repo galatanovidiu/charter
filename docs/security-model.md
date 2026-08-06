@@ -20,7 +20,7 @@ Credential digests are domain-separated by issuer and credential type. They deri
 
 ## Client and consent protection
 
-Redirect URIs are exact and immutable for a client identity. Native loopback redirects accept only literal loopback addresses and a variable runtime port. Confidential clients use `client_secret_post`; public clients never authenticate with a secret.
+Redirect URIs are exact and immutable for a client identity. HTTP local callbacks accept only exact `localhost`, `127.0.0.1`, or `[::1]` hosts and may vary only the runtime port; the path and query remain exact. Consent prominently displays the callback hostname and warns when a CIMD client uses only local callbacks because another local process could impersonate it. Confidential clients use `client_secret_post`; public clients never authenticate with a secret.
 
 Consent binds the user, client, exact resource, scopes, redirect, grant policy, and Client ID Metadata Document fingerprint. Material changes require new consent. Continuing access has inactivity and absolute expiration limits.
 

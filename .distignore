@@ -19,9 +19,11 @@
 /.gitignore
 /.npmrc
 /.nvmrc
+/.mcp.json
 /.prettierignore
 /.prettierrc.cjs
 /.wp-env.json
+/.wp-env.override.json
 /.wp-env.test.json
 /.wp-env.slice0.json
 /CHANGELOG.md

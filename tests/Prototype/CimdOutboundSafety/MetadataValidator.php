@@ -309,8 +309,7 @@ final class MetadataValidator {
 		}
 
 		return 0 === strcasecmp( 'http', $parts['scheme'] )
-			&& isset( $parts['port'] )
-			&& in_array( strtolower( $parts['host'] ), array( '127.0.0.1', '[::1]' ), true );
+			&& in_array( strtolower( $parts['host'] ), array( 'localhost', '127.0.0.1', '[::1]' ), true );
 	}
 
 	/**

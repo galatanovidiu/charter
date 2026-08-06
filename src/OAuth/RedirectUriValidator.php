@@ -56,8 +56,7 @@ final class RedirectUriValidator {
 		}
 
 		return 'http' === $scheme
-			&& isset( $parts['port'] )
-			&& in_array( $host, array( '127.0.0.1', '::1', '[::1]' ), true );
+			&& in_array( $host, array( 'localhost', '127.0.0.1', '::1', '[::1]' ), true );
 	}
 
 	/**

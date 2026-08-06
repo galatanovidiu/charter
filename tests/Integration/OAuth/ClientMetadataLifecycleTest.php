@@ -14,6 +14,7 @@ use GalatanOvidiu\Charter\OAuth\ClientMetadataDocumentValidator;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataIdentifier;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataResolutionException;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataResolver;
+use GalatanOvidiu\Charter\OAuth\ClientMetadataSnapshotStore;
 use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
 use GalatanOvidiu\Charter\OAuth\TokenService;
@@ -244,6 +245,8 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 				)
 			),
 			'duplicate redirect'         => self::metadataBodyWithOverrides( array( 'redirect_uris' => array( self::REDIRECT_ONE, self::REDIRECT_ONE ) ) ),
+			'localhost subdomain'        => self::metadataBodyWithOverrides( array( 'redirect_uris' => array( 'http://app.localhost/callback' ) ) ),
+			'localhost suffix'           => self::metadataBodyWithOverrides( array( 'redirect_uris' => array( 'http://localhost.example/callback' ) ) ),
 			'unsupported response type'  => self::metadataBodyWithOverrides( array( 'response_types' => array( 'token' ) ) ),
 			'unsupported grant type'     => self::metadataBodyWithOverrides( array( 'grant_types' => array( 'authorization_code', 'client_credentials' ) ) ),
 		);
@@ -256,6 +259,43 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 			}
 			self::assertTrue( $rejected, 'Invalid metadata was accepted: ' . $case );
 		}
+	}
+
+	/**
+	 * Verifies Claude Code's CIMD callbacks accept runtime-selected local ports.
+	 */
+	public function testAcceptsClaudeCodeCimdAndRuntimeSelectedLocalPorts(): void {
+		$clientId   = 'https://claude.ai/oauth/claude-code-client-metadata';
+		$identifier = ClientMetadataIdentifier::fromString( $clientId );
+		$body       = wp_json_encode(
+			array(
+				'client_id'                  => $clientId,
+				'client_name'                => 'Claude Code',
+				'client_uri'                 => 'https://claude.ai',
+				'redirect_uris'              => array( 'http://localhost/callback', 'http://127.0.0.1/callback' ),
+				'grant_types'                => array( 'authorization_code', 'refresh_token' ),
+				'response_types'             => array( 'code' ),
+				'token_endpoint_auth_method' => 'none',
+			),
+			JSON_UNESCAPED_SLASHES
+		);
+		self::assertIsString( $body );
+
+		$metadata = ClientMetadataDocumentValidator::validate( $body, $identifier );
+		$client   = $metadata->client( $this->issuer );
+		self::assertSame( array( 'http://localhost/callback', 'http://127.0.0.1/callback' ), $metadata->redirectUris() );
+		self::assertTrue( $client->allowsRedirectUri( 'http://localhost:3118/callback' ) );
+		self::assertTrue( $client->allowsRedirectUri( 'http://127.0.0.1:3118/callback' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://localhost:3118/other' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://localhost:3118/callback?changed=1' ) );
+		self::assertFalse( $client->allowsRedirectUri( 'http://[::1]:3118/callback' ) );
+
+		$timestamp = time();
+		$snapshots = new ClientMetadataSnapshotStore();
+		$snapshots->store( $this->issuer, $metadata, $timestamp, $timestamp + 60 );
+		$fresh = $snapshots->findFresh( $this->issuer, $clientId, $timestamp );
+		self::assertNotNull( $fresh );
+		self::assertSame( $metadata->redirectUris(), $fresh->redirectUris() );
 	}
 
 	/** Verifies an expired reusable snapshot is removed before a failed refresh. */

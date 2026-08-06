@@ -112,7 +112,7 @@ final class MetadataValidationTest extends TestCase {
 	}
 
 	/**
-	 * Verifies the first and last usable loopback ports and exact HTTPS URI forms.
+	 * Verifies local callback and exact HTTPS URI boundary forms.
 	 *
 	 * @since 0.1.0
 	 *
@@ -287,8 +287,8 @@ final class MetadataValidationTest extends TestCase {
 			'non-string member'         => array( array( 42 ) ),
 			'duplicate member'          => array( array( 'https://client.example/callback', 'https://client.example/callback' ) ),
 			'http non-loopback'         => array( array( 'http://client.example/callback' ) ),
-			'http localhost name'       => array( array( 'http://localhost:49152/callback' ) ),
-			'loopback without port'     => array( array( 'http://127.0.0.1/callback' ) ),
+			'localhost subdomain'       => array( array( 'http://app.localhost/callback' ) ),
+			'localhost suffix'          => array( array( 'http://localhost.example/callback' ) ),
 			'IPv4 loopback port zero'   => array( array( 'http://127.0.0.1:0/callback' ) ),
 			'IPv6 loopback port zero'   => array( array( 'http://[::1]:0/callback' ) ),
 			'custom scheme'             => array( array( 'com.example.app:/callback' ) ),
@@ -322,6 +322,10 @@ final class MetadataValidationTest extends TestCase {
 	 */
 	public function acceptedRedirectBoundaryProvider(): array {
 		return array(
+			'localhost without port' => array( 'http://localhost/callback' ),
+			'localhost runtime port' => array( 'http://localhost:49152/callback' ),
+			'IPv4 without port'      => array( 'http://127.0.0.1/callback' ),
+			'IPv6 without port'      => array( 'http://[::1]/callback' ),
 			'IPv4 first usable port' => array( 'http://127.0.0.1:1/callback' ),
 			'IPv4 last usable port'  => array( 'http://127.0.0.1:65535/callback' ),
 			'IPv6 first usable port' => array( 'http://[::1]:1/callback' ),

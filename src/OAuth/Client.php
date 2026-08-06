@@ -143,7 +143,7 @@ final class Client {
 	/**
 	 * Reports whether a requested redirect is registered.
 	 *
-	 * Native loopback redirects may vary only their runtime port.
+	 * Local callback redirects may vary only their runtime port.
 	 *
 	 * @since 0.1.0
 	 *
@@ -160,7 +160,7 @@ final class Client {
 	}
 
 	/**
-	 * Matches the native loopback exception without relaxing any other component.
+	 * Matches the local callback exception without relaxing any other component.
 	 *
 	 * @since 0.1.0
 	 *
@@ -180,8 +180,9 @@ final class Client {
 		if (
 			'http' !== strtolower( (string) ( $registered['scheme'] ?? '' ) )
 			|| 'http' !== strtolower( (string) ( $requested['scheme'] ?? '' ) )
-			|| ! in_array( $registeredHost, array( '127.0.0.1', '::1', '[::1]' ), true )
+			|| ! in_array( $registeredHost, array( 'localhost', '127.0.0.1', '::1', '[::1]' ), true )
 			|| $registeredHost !== $requestedHost
+			|| ( isset( $requested['port'] ) && 1 > $requested['port'] )
 		) {
 			return false;
 		}
