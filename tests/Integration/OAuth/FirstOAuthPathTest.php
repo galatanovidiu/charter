@@ -86,6 +86,9 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		Schema::install();
 		$plugin->credentials()->deleteAll();
 		$plugin->clients()->deleteAll();
+		$plugin->clientMetadataSnapshots()->deleteAll();
+		$plugin->audit()->deleteAll();
+		$plugin->rateLimiter()->deleteAll();
 		$plugin->siteState()->delete();
 		self::assertTrue( $plugin->siteState()->prepareCurrentSite() );
 
@@ -121,6 +124,9 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		$plugin = Plugin::boot();
 		$plugin->credentials()->deleteAll();
 		$plugin->clients()->deleteAll();
+		$plugin->clientMetadataSnapshots()->deleteAll();
+		$plugin->audit()->deleteAll();
+		$plugin->rateLimiter()->deleteAll();
 		$plugin->siteState()->delete();
 		wp_set_current_user( 0 );
 		unset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] );

@@ -9,6 +9,9 @@ declare(strict_types=1);
 
 namespace GalatanOvidiu\Charter\OAuth;
 
+use GalatanOvidiu\Charter\Security\AuditLog;
+use GalatanOvidiu\Charter\Security\RateLimiter;
+use GalatanOvidiu\Charter\Security\SourceAddress;
 use GalatanOvidiu\Charter\Site\SiteState;
 
 /**
@@ -26,14 +29,20 @@ final class AuthorizationService {
 	 *
 	 * @since 0.1.0
 	 *
-	 * @param SiteState       $siteState   Site lifecycle and identity.
-	 * @param ClientRegistry  $clients     Pre-registered clients.
-	 * @param CredentialStore $credentials Credential persistence.
+	 * @param SiteState              $siteState   Site lifecycle and identity.
+	 * @param ClientRegistry         $clients     Pre-registered clients.
+	 * @param CredentialStore        $credentials Credential persistence.
+	 * @param ClientMetadataResolver $clientMetadata Authorization-time client onboarding.
+	 * @param RateLimiter            $rateLimiter OAuth abuse counters.
+	 * @param AuditLog               $audit Security event ledger.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly ClientRegistry $clients,
-		private readonly CredentialStore $credentials
+		private readonly CredentialStore $credentials,
+		private readonly ClientMetadataResolver $clientMetadata,
+		private readonly RateLimiter $rateLimiter,
+		private readonly AuditLog $audit
 	) {
 	}
 
@@ -56,7 +65,12 @@ final class AuthorizationService {
 		$clientId    = self::requiredParameter( $parameters, 'client_id', 2048 );
 		$redirectUri = self::requiredParameter( $parameters, 'redirect_uri', 2048 );
 		$state       = self::optionalParameter( $parameters, 'state', 2048 );
-		$client      = $this->clients->findActive( $issuer, $clientId );
+		$this->enforceAuthorizationLimit( $issuer, $clientId, null, time() );
+		try {
+			$client = $this->clientMetadata->resolveForAuthorization( $issuer, $clientId, time() );
+		} catch ( ClientMetadataResolutionException ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The client metadata could not be validated.', 503 );
+		}
 
 		if ( null === $client || ! $client->allowsRedirectUri( $redirectUri ) ) {
 			throw new ProtocolException( 'invalid_request', 'The client or redirect URI is invalid.' );
@@ -118,6 +132,11 @@ final class AuthorizationService {
 		if ( $userId <= 0 || ! UserEligibility::isActiveForCurrentSite( $userId ) ) {
 			throw new ProtocolException( 'access_denied', 'A current WordPress user is required.', 403 );
 		}
+		$identity = $this->siteState->identity();
+		if ( null === $identity ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
+		}
+		$this->enforceAuthorizationLimit( $identity->issuer(), self::requiredParameter( $parameters, 'client_id', 2048 ), $userId, time() );
 
 		$request     = $this->validate( $parameters );
 		$transaction = $this->credentials->issueAuthorizationRequest( $request, $userId, time() );
@@ -161,7 +180,7 @@ final class AuthorizationService {
 		}
 
 		$client = $this->clients->findActive( $record->issuer(), $record->clientId() );
-		if ( null === $client || ! $client->allowsRedirectUri( $record->redirectUri() ) ) {
+		if ( null === $client || ( ClientRegistry::SOURCE_CIMD !== $client->source() && ! $client->allowsRedirectUri( $record->redirectUri() ) ) ) {
 			throw new ProtocolException( 'invalid_request', 'The authorization transaction is invalid or expired.' );
 		}
 
@@ -256,5 +275,41 @@ final class AuthorizationService {
 		}
 
 		return $value;
+	}
+
+	/**
+	 * Applies the accepted client/network and represented-user authorization limits.
+	 *
+	 * @param string   $issuer Exact issuer.
+	 * @param string   $clientId Exact client identifier.
+	 * @param int|null $userId Represented user, or null before authentication.
+	 * @param int      $timestamp Current timestamp.
+	 * @throws ProtocolException When the request is limited or policy is unavailable.
+	 */
+	private function enforceAuthorizationLimit( string $issuer, string $clientId, ?int $userId, int $timestamp ): void {
+		$defaults = array(
+			'authorization_network_client' => 60,
+			'authorization_user_client'    => 20,
+		);
+		$policy   = apply_filters( 'charter_oauth_rate_limit_policy', $defaults, $issuer ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- One accepted advanced OAuth policy hook.
+		if ( ! is_array( $policy ) ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The authorization policy is unavailable.', 503 );
+		}
+
+		$surface = null === $userId ? 'authorization_network_client' : 'authorization_user_client';
+		$limit   = $policy[ $surface ] ?? null;
+		$subject = null === $userId ? SourceAddress::current() . "\0" . $clientId : (string) $userId . "\0" . $clientId;
+		if ( ! is_int( $limit ) || 1 > $limit ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The authorization policy is unavailable.', 503 );
+		}
+		$decision = $this->rateLimiter->consume( $issuer, $surface, $subject, $limit, 10 * MINUTE_IN_SECONDS, $timestamp );
+		if ( $decision->allowed() ) {
+			return;
+		}
+		if ( $decision->count() === $decision->limit() + 1 ) {
+			$this->audit->record( $issuer, 'rate_limit_escalated', 'blocked', $surface, null, $userId, $clientId, SourceAddress::current(), $timestamp );
+		}
+
+		throw new ProtocolException( 'temporarily_unavailable', 'Too many authorization requests.', 429, null, null, $decision->retryAfter() ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Internal decision state, not output.
 	}
 }

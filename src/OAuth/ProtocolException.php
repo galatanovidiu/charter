@@ -28,13 +28,15 @@ final class ProtocolException extends RuntimeException {
 	 * @param int         $status      HTTP status.
 	 * @param string|null $redirectUri Validated redirect URI, when redirecting is safe.
 	 * @param string|null $state       Client state to preserve.
+	 * @param int|null    $retryAfter Retry delay for a throttled request.
 	 */
 	public function __construct(
 		private readonly string $error,
 		string $description,
 		private readonly int $status = 400,
 		private readonly ?string $redirectUri = null,
-		private readonly ?string $state = null
+		private readonly ?string $state = null,
+		private readonly ?int $retryAfter = null
 	) {
 		parent::__construct( $description );
 	}
@@ -73,5 +75,10 @@ final class ProtocolException extends RuntimeException {
 	 */
 	public function state(): ?string {
 		return $this->state;
+	}
+
+	/** Returns the bounded Retry-After delay when throttled. */
+	public function retryAfter(): ?int {
+		return $this->retryAfter;
 	}
 }

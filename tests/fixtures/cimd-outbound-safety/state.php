@@ -807,7 +807,7 @@ function charter_p3_request_policy_matches( string $request ): bool {
 	if (
 		! is_array( $userAgent )
 		|| 1 !== count( $userAgent )
-		|| ! in_array( $userAgent[0], array( 'Charter-CIMD-Proof/1', 'Charter-P3-Probe/1' ), true )
+		|| ! in_array( $userAgent[0], array( 'Charter-CIMD-Proof/1', 'Charter-CIMD/0.1', 'Charter-P3-Probe/1' ), true )
 	) {
 		return false;
 	}

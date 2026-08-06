@@ -36,6 +36,7 @@ final class CredentialRecord {
 	 * @param int|null    $grantId       Owning grant when authority exists.
 	 * @param int|null    $parentId      Prior refresh member when applicable.
 	 * @param bool        $continuingAccess Whether continuing access was approved.
+	 * @param string      $clientMetadataFingerprint Validated client metadata binding.
 	 */
 	public function __construct(
 		private readonly int $id,
@@ -52,7 +53,8 @@ final class CredentialRecord {
 		private readonly ?int $consumedAt,
 		private readonly ?int $grantId = null,
 		private readonly ?int $parentId = null,
-		private readonly bool $continuingAccess = false
+		private readonly bool $continuingAccess = false,
+		private readonly string $clientMetadataFingerprint = ''
 	) {
 	}
 
@@ -180,6 +182,11 @@ final class CredentialRecord {
 	 */
 	public function continuingAccess(): bool {
 		return $this->continuingAccess;
+	}
+
+	/** Returns the validated client metadata binding. */
+	public function clientMetadataFingerprint(): string {
+		return $this->clientMetadataFingerprint;
 	}
 
 	/**

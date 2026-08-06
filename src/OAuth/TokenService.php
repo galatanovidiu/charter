@@ -214,10 +214,6 @@ final class TokenService {
 	 * @throws ProtocolException When refresh validation fails.
 	 */
 	private function exchangeRefreshToken( array $parameters, Client $client ): array {
-		if ( ! $client->supportsGrantType( Client::GRANT_REFRESH_TOKEN ) ) {
-			throw new ProtocolException( 'unauthorized_client', 'The client cannot use this grant type.' );
-		}
-
 		$identity = $this->siteState->identity();
 		if ( null === $identity ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );

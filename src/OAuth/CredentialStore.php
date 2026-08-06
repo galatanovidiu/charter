@@ -77,7 +77,8 @@ final class CredentialStore {
 			'chr_',
 			null,
 			null,
-			$request->continuingAccessRequested()
+			$request->continuingAccessRequested(),
+			$request->client()->metadataFingerprint()
 		);
 	}
 
@@ -133,7 +134,8 @@ final class CredentialStore {
 					$timestamp,
 					$grantId,
 					null,
-					$current->continuingAccess()
+					$current->continuingAccess(),
+					$current->clientMetadataFingerprint()
 				);
 
 				return true;
@@ -165,7 +167,7 @@ final class CredentialStore {
 			function ( mysqli $database ) use ( $request, $userId, $timestamp ): ?GrantRecord {
 				$table  = self::quotedTable( Schema::grantTable() );
 				$result = $database->execute_query(
-					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at
+					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint
 					FROM {$table}
 					WHERE client_digest = ? AND user_id = ? AND status = 'active'
 					ORDER BY authorized_at DESC, id DESC LIMIT 50",
@@ -190,6 +192,7 @@ final class CredentialStore {
 						&& $grant->userId() === $userId
 						&& $grant->scope() === $request->scope()
 						&& $grant->continuingAccess() === $request->continuingAccessRequested()
+						&& $grant->clientMetadataFingerprint() === $request->client()->metadataFingerprint()
 						&& $grant->isActiveAt( $timestamp, $request->continuingAccessRequested() )
 					) {
 						$result->free();
@@ -260,7 +263,8 @@ final class CredentialStore {
 					$timestamp,
 					$grantId,
 					null,
-					$grant->continuingAccess()
+					$grant->continuingAccess(),
+					$grant->clientMetadataFingerprint()
 				);
 
 				if ( is_string( $refreshDigest ) ) {
@@ -284,7 +288,8 @@ final class CredentialStore {
 						$timestamp,
 						$grantId,
 						null,
-						true
+						true,
+						$grant->clientMetadataFingerprint()
 					);
 				}
 
@@ -367,7 +372,8 @@ final class CredentialStore {
 					$timestamp,
 					$grantId,
 					null,
-					true
+					true,
+					$grant->clientMetadataFingerprint()
 				);
 				$this->insertCredential(
 					$database,
@@ -385,7 +391,8 @@ final class CredentialStore {
 					$timestamp,
 					$grantId,
 					$current->id(),
-					true
+					true,
+					$grant->clientMetadataFingerprint()
 				);
 				$this->touchGrant( $database, $grantId, $timestamp, true );
 
@@ -461,7 +468,7 @@ final class CredentialStore {
 			function ( mysqli $database ) use ( $issuer, $userId, $timestamp ): array {
 				$table  = self::quotedTable( Schema::grantTable() );
 				$result = $database->execute_query(
-					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at
+					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint
 					FROM {$table}
 					WHERE issuer = ? AND user_id = ? AND status = 'active'
 					ORDER BY last_used_at DESC, id DESC LIMIT 500",
@@ -513,7 +520,7 @@ final class CredentialStore {
 			function ( mysqli $database ) use ( $issuer, $clientId, $timestamp ): array {
 				$table  = self::quotedTable( Schema::grantTable() );
 				$result = $database->execute_query(
-					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at
+					"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint
 					FROM {$table}
 					WHERE client_digest = ? AND status = 'active'
 					ORDER BY last_used_at DESC, id DESC LIMIT 1000",
@@ -746,14 +753,15 @@ final class CredentialStore {
 	 * @param int|null    $grantId Owning grant.
 	 * @param int|null    $parentId Refresh parent.
 	 * @param bool        $continuingAccess Continuing-access choice.
+	 * @param string      $clientMetadataFingerprint Validated client metadata binding.
 	 * @throws RuntimeException When secure credential issuance fails.
 	 */
-	private function issue( string $type, string $issuer, string $resourceIdentifier, string $clientId, string $redirectUri, int $userId, string $scope, string $codeChallenge, ?string $requestState, int $expiresAt, int $createdAt, string $prefix, ?int $grantId, ?int $parentId, bool $continuingAccess ): string {
+	private function issue( string $type, string $issuer, string $resourceIdentifier, string $clientId, string $redirectUri, int $userId, string $scope, string $codeChallenge, ?string $requestState, int $expiresAt, int $createdAt, string $prefix, ?int $grantId, ?int $parentId, bool $continuingAccess, string $clientMetadataFingerprint ): string {
 		$credential = $prefix . self::base64UrlEncode( random_bytes( 32 ) );
 		$digest     = $this->hasher->digest( $issuer, $type, $credential );
 		$this->transactions->run(
-			function ( mysqli $database ) use ( $type, $digest, $issuer, $resourceIdentifier, $clientId, $redirectUri, $userId, $scope, $codeChallenge, $requestState, $expiresAt, $createdAt, $grantId, $parentId, $continuingAccess ): void {
-				$this->insertCredential( $database, $type, $digest, $issuer, $resourceIdentifier, $clientId, $redirectUri, $userId, $scope, $codeChallenge, $requestState, $expiresAt, $createdAt, $grantId, $parentId, $continuingAccess );
+			function ( mysqli $database ) use ( $type, $digest, $issuer, $resourceIdentifier, $clientId, $redirectUri, $userId, $scope, $codeChallenge, $requestState, $expiresAt, $createdAt, $grantId, $parentId, $continuingAccess, $clientMetadataFingerprint ): void {
+				$this->insertCredential( $database, $type, $digest, $issuer, $resourceIdentifier, $clientId, $redirectUri, $userId, $scope, $codeChallenge, $requestState, $expiresAt, $createdAt, $grantId, $parentId, $continuingAccess, $clientMetadataFingerprint );
 			}
 		);
 
@@ -779,15 +787,16 @@ final class CredentialStore {
 	 * @param int|null    $grantId Grant identifier.
 	 * @param int|null    $parentId Refresh parent identifier.
 	 * @param bool        $continuingAccess Continuing-access choice.
+	 * @param string      $clientMetadataFingerprint Validated client metadata binding.
 	 * @throws RuntimeException When credential insertion fails.
 	 */
-	private function insertCredential( mysqli $database, string $type, string $digest, string $issuer, string $resourceIdentifier, string $clientId, string $redirectUri, int $userId, string $scope, string $codeChallenge, ?string $requestState, int $expiresAt, int $createdAt, ?int $grantId, ?int $parentId, bool $continuingAccess ): void {
+	private function insertCredential( mysqli $database, string $type, string $digest, string $issuer, string $resourceIdentifier, string $clientId, string $redirectUri, int $userId, string $scope, string $codeChallenge, ?string $requestState, int $expiresAt, int $createdAt, ?int $grantId, ?int $parentId, bool $continuingAccess, string $clientMetadataFingerprint ): void {
 		$table  = self::quotedTable( Schema::credentialTable() );
 		$result = $database->execute_query(
 			"INSERT INTO {$table}
-			(credential_type,digest,issuer,resource,client_id,redirect_uri,user_id,scope,code_challenge,request_state,expires_at,consumed_at,created_at,grant_id,parent_id,continuing_access)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?)",
-			array( $type, $digest, $issuer, $resourceIdentifier, $clientId, $redirectUri, $userId, $scope, $codeChallenge, $requestState, $expiresAt, $createdAt, $grantId, $parentId, $continuingAccess ? 1 : 0 )
+			(credential_type,digest,issuer,resource,client_id,redirect_uri,user_id,scope,code_challenge,request_state,expires_at,consumed_at,created_at,grant_id,parent_id,continuing_access,client_metadata_fingerprint)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,?)",
+			array( $type, $digest, $issuer, $resourceIdentifier, $clientId, $redirectUri, $userId, $scope, $codeChallenge, $requestState, $expiresAt, $createdAt, $grantId, $parentId, $continuingAccess ? 1 : 0, $clientMetadataFingerprint )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Owned transaction SQL cannot use the reconnecting global wpdb connection.
 		if ( true !== $result || 1 !== $database->affected_rows ) {
 			throw new RuntimeException( 'charter_credential_issuance_failed' );
@@ -808,8 +817,8 @@ final class CredentialStore {
 		$inactivityExpiry = $transaction->continuingAccess() ? $timestamp + self::REFRESH_INACTIVITY_LIFETIME : null;
 		$result           = $database->execute_query(
 			"INSERT INTO {$table}
-			(issuer,resource,client_id,client_digest,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,revoked_at,revocation_reason)
-			VALUES (?,?,?,?,?,?,?,?, 'active', ?,?,?,?,NULL,NULL)",
+			(issuer,resource,client_id,client_digest,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint,revoked_at,revocation_reason)
+			VALUES (?,?,?,?,?,?,?,?, 'active', ?,?,?,?,?,NULL,NULL)",
 			array(
 				$transaction->issuer(),
 				$transaction->resource(),
@@ -823,6 +832,7 @@ final class CredentialStore {
 				$timestamp,
 				$absoluteExpiry,
 				$inactivityExpiry,
+				$transaction->clientMetadataFingerprint(),
 			)
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Owned transaction SQL cannot use the reconnecting global wpdb connection.
 		if ( true !== $result || 1 !== $database->affected_rows || ! is_int( $database->insert_id ) || $database->insert_id <= 0 ) {
@@ -843,7 +853,7 @@ final class CredentialStore {
 	private function selectCredential( mysqli $database, string $type, string $digest ): ?CredentialRecord {
 		$table  = self::quotedTable( Schema::credentialTable() );
 		$result = $database->execute_query(
-			"SELECT id,credential_type,issuer,resource,client_id,redirect_uri,user_id,scope,code_challenge,request_state,expires_at,consumed_at,grant_id,parent_id,continuing_access FROM {$table} WHERE credential_type = ? AND digest = ? LIMIT 1",
+			"SELECT id,credential_type,issuer,resource,client_id,redirect_uri,user_id,scope,code_challenge,request_state,expires_at,consumed_at,grant_id,parent_id,continuing_access,client_metadata_fingerprint FROM {$table} WHERE credential_type = ? AND digest = ? LIMIT 1",
 			array( $type, $digest )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Authoritative credential reads use an owned non-reconnecting connection.
 		if ( ! $result instanceof mysqli_result ) {
@@ -865,7 +875,7 @@ final class CredentialStore {
 	private function selectGrant( mysqli $database, int $grantId ): ?GrantRecord {
 		$table  = self::quotedTable( Schema::grantTable() );
 		$result = $database->execute_query(
-			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at FROM {$table} WHERE id = ? LIMIT 1",
+			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint FROM {$table} WHERE id = ? LIMIT 1",
 			array( $grantId )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Authoritative grant reads use an owned non-reconnecting connection.
 		if ( ! $result instanceof mysqli_result ) {
@@ -887,7 +897,7 @@ final class CredentialStore {
 	private function lockCredential( mysqli $database, int $credentialId ): ?CredentialRecord {
 		$table  = self::quotedTable( Schema::credentialTable() );
 		$result = $database->execute_query(
-			"SELECT id,credential_type,issuer,resource,client_id,redirect_uri,user_id,scope,code_challenge,request_state,expires_at,consumed_at,grant_id,parent_id,continuing_access FROM {$table} WHERE id = ? FOR UPDATE",
+			"SELECT id,credential_type,issuer,resource,client_id,redirect_uri,user_id,scope,code_challenge,request_state,expires_at,consumed_at,grant_id,parent_id,continuing_access,client_metadata_fingerprint FROM {$table} WHERE id = ? FOR UPDATE",
 			array( $credentialId )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Owned transaction SQL cannot use the reconnecting global wpdb connection.
 		if ( ! $result instanceof mysqli_result ) {
@@ -909,7 +919,7 @@ final class CredentialStore {
 	private function lockGrant( mysqli $database, int $grantId ): ?GrantRecord {
 		$table  = self::quotedTable( Schema::grantTable() );
 		$result = $database->execute_query(
-			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at FROM {$table} WHERE id = ? FOR UPDATE",
+			"SELECT id,issuer,resource,client_id,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint FROM {$table} WHERE id = ? FOR UPDATE",
 			array( $grantId )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Owned transaction SQL cannot use the reconnecting global wpdb connection.
 		if ( ! $result instanceof mysqli_result ) {
@@ -1003,7 +1013,7 @@ final class CredentialStore {
 	 * @param array<mixed> $row Database row.
 	 */
 	private function recordFromRow( array $row ): ?CredentialRecord {
-		$requiredStrings = array( 'credential_type', 'issuer', 'resource', 'client_id', 'redirect_uri', 'scope', 'code_challenge' );
+		$requiredStrings = array( 'credential_type', 'issuer', 'resource', 'client_id', 'redirect_uri', 'scope', 'code_challenge', 'client_metadata_fingerprint' );
 		foreach ( $requiredStrings as $field ) {
 			if ( ! is_string( $row[ $field ] ?? null ) ) {
 				return null;
@@ -1045,7 +1055,8 @@ final class CredentialStore {
 			$optionalIntegers['consumed_at'],
 			$optionalIntegers['grant_id'],
 			$optionalIntegers['parent_id'],
-			1 === $continuingAccess
+			1 === $continuingAccess,
+			$row['client_metadata_fingerprint']
 		);
 	}
 
@@ -1055,7 +1066,7 @@ final class CredentialStore {
 	 * @param array<mixed> $row Database row.
 	 */
 	private function grantFromRow( array $row ): ?GrantRecord {
-		foreach ( array( 'issuer', 'resource', 'client_id', 'redirect_uri', 'scope', 'status' ) as $field ) {
+		foreach ( array( 'issuer', 'resource', 'client_id', 'redirect_uri', 'scope', 'status', 'client_metadata_fingerprint' ) as $field ) {
 			if ( ! is_string( $row[ $field ] ?? null ) ) {
 				return null;
 			}
@@ -1090,7 +1101,8 @@ final class CredentialStore {
 			$authorizedAt,
 			$lastUsedAt,
 			$absoluteValue,
-			$inactivityValue
+			$inactivityValue,
+			$row['client_metadata_fingerprint']
 		);
 	}
 
@@ -1111,7 +1123,8 @@ final class CredentialStore {
 			&& $expected->scope() === $current->scope()
 			&& $expected->codeChallenge() === $current->codeChallenge()
 			&& $expected->grantId() === $current->grantId()
-			&& $expected->continuingAccess() === $current->continuingAccess();
+			&& $expected->continuingAccess() === $current->continuingAccess()
+			&& $expected->clientMetadataFingerprint() === $current->clientMetadataFingerprint();
 	}
 
 	/**
@@ -1128,7 +1141,8 @@ final class CredentialStore {
 			&& $credential->redirectUri() === $grant->redirectUri()
 			&& $credential->userId() === $grant->userId()
 			&& $credential->scope() === $grant->scope()
-			&& $credential->continuingAccess() === $grant->continuingAccess();
+			&& $credential->continuingAccess() === $grant->continuingAccess()
+			&& $credential->clientMetadataFingerprint() === $grant->clientMetadataFingerprint();
 	}
 
 	/**
@@ -1144,7 +1158,8 @@ final class CredentialStore {
 			&& $transaction->redirectUri() === $grant->redirectUri()
 			&& $transaction->userId() === $grant->userId()
 			&& $transaction->scope() === $grant->scope()
-			&& $transaction->continuingAccess() === $grant->continuingAccess();
+			&& $transaction->continuingAccess() === $grant->continuingAccess()
+			&& $transaction->clientMetadataFingerprint() === $grant->clientMetadataFingerprint();
 	}
 
 	/**

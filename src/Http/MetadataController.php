@@ -111,6 +111,7 @@ final class MetadataController {
 				'revocation_endpoint_auth_methods_supported' => array( 'none', 'client_secret_post' ),
 				'scopes_supported'                      => array( AuthorizationService::GENERAL_SCOPE, AuthorizationService::OFFLINE_ACCESS_SCOPE ),
 				'authorization_response_iss_parameter_supported' => true,
+				'client_id_metadata_document_supported' => true,
 			);
 			if ( DynamicRegistrationService::isEnabled() ) {
 				$data['registration_endpoint'] = $urls->registrationEndpoint();

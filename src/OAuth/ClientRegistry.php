@@ -168,6 +168,56 @@ final class ClientRegistry {
 	}
 
 	/**
+	 * Finds one registration regardless of lifecycle status.
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @param string $clientId Exact client identifier.
+	 */
+	public function findRegistration( string $issuer, string $clientId ): ?ClientRegistrationRecord {
+		$this->migrateLegacyRecords();
+		$record = $this->findRecord( $issuer, $clientId );
+
+		return null === $record ? null : self::registrationProjection( $record );
+	}
+
+	/**
+	 * Persists only the lifecycle identity needed by an accepted CIMD client.
+	 *
+	 * Remote names, redirects, and fingerprints remain in the separately governed
+	 * reusable snapshot store and are never copied here for no-store responses.
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @param string $clientId Exact Client Identifier URL.
+	 * @param int    $timestamp Creation timestamp.
+	 */
+	public function ensureCimdClient( string $issuer, string $clientId, int $timestamp ): bool {
+		$this->migrateLegacyRecords();
+		$record = array(
+			'issuer'                     => $issuer,
+			'client_id'                  => $clientId,
+			'client_name'                => '[remote client metadata]',
+			'redirect_uris'              => array(),
+			'status'                     => self::STATUS_ACTIVE,
+			'token_endpoint_auth_method' => Client::AUTH_NONE,
+			'grant_types'                => array( Client::GRANT_AUTHORIZATION_CODE, Client::GRANT_REFRESH_TOKEN ),
+			'client_secret_hash'         => null,
+			'metadata_fingerprint'       => '',
+		);
+
+		return $this->transactions->run(
+			function ( mysqli $database ) use ( $issuer, $clientId, $timestamp, $record ): bool {
+				$existing = $this->selectRecord( $database, $issuer, $clientId, true );
+				if ( null !== $existing ) {
+					return self::SOURCE_CIMD === $existing['source'] && self::STATUS_ACTIVE === $existing['status'];
+				}
+
+				$this->insertRecord( $database, $record, self::SOURCE_CIMD, $timestamp );
+				return true;
+			}
+		);
+	}
+
+	/**
 	 * Authenticates one active client for token-like endpoints.
 	 *
 	 * @param string      $issuer Exact issuer.

@@ -34,6 +34,7 @@ final class GrantRecord {
 	 * @param int      $lastUsedAt Most recent credential issuance or refresh.
 	 * @param int|null $refreshAbsoluteExpiresAt Absolute refresh-family expiry.
 	 * @param int|null $refreshInactivityExpiresAt Refresh-family inactivity expiry.
+	 * @param string   $clientMetadataFingerprint Approved client metadata binding.
 	 */
 	public function __construct(
 		private readonly int $id,
@@ -48,7 +49,8 @@ final class GrantRecord {
 		private readonly int $authorizedAt,
 		private readonly int $lastUsedAt,
 		private readonly ?int $refreshAbsoluteExpiresAt,
-		private readonly ?int $refreshInactivityExpiresAt
+		private readonly ?int $refreshInactivityExpiresAt,
+		private readonly string $clientMetadataFingerprint = ''
 	) {
 	}
 
@@ -158,6 +160,11 @@ final class GrantRecord {
 	 */
 	public function refreshAbsoluteExpiresAt(): ?int {
 		return $this->refreshAbsoluteExpiresAt;
+	}
+
+	/** Returns the client metadata binding approved by the user. */
+	public function clientMetadataFingerprint(): string {
+		return $this->clientMetadataFingerprint;
 	}
 
 	/**

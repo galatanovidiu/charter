@@ -19,7 +19,7 @@ use RuntimeException;
 final class Schema {
 
 	private const VERSION_OPTION = 'charter_oauth_schema_version';
-	private const VERSION        = '3';
+	private const VERSION        = '4';
 
 	/**
 	 * Installs the schema only when the current version is absent.
@@ -55,6 +55,7 @@ final class Schema {
 		$client_table = self::clientTable();
 		$rate_table   = self::rateLimitTable();
 		$audit_table  = self::auditTable();
+		$cimd_table   = self::clientMetadataTable();
 		$sql          = "CREATE TABLE {$table_name} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			credential_type varchar(32) NOT NULL,
@@ -73,6 +74,7 @@ final class Schema {
 			grant_id bigint(20) unsigned NULL,
 			parent_id bigint(20) unsigned NULL,
 			continuing_access tinyint(1) unsigned NOT NULL DEFAULT 0,
+			client_metadata_fingerprint char(64) NOT NULL DEFAULT '',
 			PRIMARY KEY  (id),
 			UNIQUE KEY credential (credential_type,digest),
 			KEY grant_credentials (grant_id,credential_type,consumed_at,expires_at),
@@ -93,6 +95,7 @@ final class Schema {
 			last_used_at bigint(20) unsigned NOT NULL,
 			refresh_absolute_expires_at bigint(20) unsigned NULL,
 			refresh_inactivity_expires_at bigint(20) unsigned NULL,
+			client_metadata_fingerprint char(64) NOT NULL DEFAULT '',
 			revoked_at bigint(20) unsigned NULL,
 			revocation_reason varchar(64) NULL,
 			PRIMARY KEY  (id),
@@ -147,10 +150,26 @@ final class Schema {
 			PRIMARY KEY  (id),
 			KEY issuer_events (issuer_digest,occurred_at),
 			KEY retention (occurred_at)
+		) ENGINE=InnoDB {$collation};
+		CREATE TABLE {$cimd_table} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			issuer_digest char(64) NOT NULL,
+			client_digest char(64) NOT NULL,
+			issuer text NOT NULL,
+			client_id text NOT NULL,
+			client_name varchar(256) NOT NULL,
+			redirect_uris longtext NOT NULL,
+			grant_types varchar(128) NOT NULL,
+			metadata_fingerprint char(64) NOT NULL,
+			fetched_at bigint(20) unsigned NOT NULL,
+			fresh_until bigint(20) unsigned NOT NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY client_snapshot (client_digest),
+			KEY issuer_freshness (issuer_digest,fresh_until)
 		) ENGINE=InnoDB {$collation};";
 
 		dbDelta( $sql );
-		if ( ! self::isCurrent( $database, $table_name, $grant_table, $client_table, $rate_table, $audit_table ) ) {
+		if ( ! self::isCurrent( $database, $table_name, $grant_table, $client_table, $rate_table, $audit_table, $cimd_table ) ) {
 			throw new RuntimeException( 'charter_schema_installation_failed' );
 		}
 		update_option( self::VERSION_OPTION, self::VERSION, false );
@@ -202,6 +221,13 @@ final class Schema {
 	}
 
 	/**
+	 * Returns the current site's reusable Client ID Metadata Document table name.
+	 */
+	public static function clientMetadataTable(): string {
+		return self::database()->prefix . 'charter_oauth_cimd_cache';
+	}
+
+	/**
 	 * Returns the initialized WordPress database connection.
 	 *
 	 * @since 0.1.0
@@ -229,8 +255,9 @@ final class Schema {
 	 * @param string $clientTableName Current site client table.
 	 * @param string $rateTableName Current site rate-limit table.
 	 * @param string $auditTableName Current site audit table.
+	 * @param string $cimdTableName Current site CIMD snapshot table.
 	 */
-	private static function isCurrent( \wpdb $database, string $tableName, string $grantTableName, string $clientTableName, string $rateTableName, string $auditTableName ): bool {
+	private static function isCurrent( \wpdb $database, string $tableName, string $grantTableName, string $clientTableName, string $rateTableName, string $auditTableName, string $cimdTableName ): bool {
 		$sql = $database->prepare( 'SHOW COLUMNS FROM %i', $tableName );
 		if ( ! is_string( $sql ) ) {
 			return false;
@@ -255,6 +282,7 @@ final class Schema {
 			'grant_id',
 			'parent_id',
 			'continuing_access',
+			'client_metadata_fingerprint',
 		);
 
 		if ( array() !== array_diff( $requiredColumns, array_filter( $columns, 'is_string' ) ) ) {
@@ -314,6 +342,7 @@ final class Schema {
 			'refresh_inactivity_expires_at',
 			'revoked_at',
 			'revocation_reason',
+			'client_metadata_fingerprint',
 		);
 
 		if ( array() !== array_diff( $requiredGrant, array_filter( $grantColumns, 'is_string' ) ) ) {
@@ -324,6 +353,7 @@ final class Schema {
 			$clientTableName => array( 'id', 'issuer_digest', 'client_digest', 'issuer', 'client_id', 'client_name', 'redirect_uris', 'status', 'source', 'token_endpoint_auth_method', 'grant_types', 'client_secret_hash', 'metadata_fingerprint', 'created_at', 'last_activity_at', 'authorized_at', 'blocked_at', 'deleted_at' ),
 			$rateTableName   => array( 'bucket_digest', 'window_started_at', 'window_seconds', 'request_count', 'expires_at' ),
 			$auditTableName  => array( 'id', 'occurred_at', 'issuer_digest', 'issuer', 'event_type', 'actor_user_id', 'represented_user_id', 'client_id', 'outcome', 'reason', 'source_address' ),
+			$cimdTableName   => array( 'id', 'issuer_digest', 'client_digest', 'issuer', 'client_id', 'client_name', 'redirect_uris', 'grant_types', 'metadata_fingerprint', 'fetched_at', 'fresh_until' ),
 		);
 		foreach ( $requiredTables as $requiredTable => $requiredColumns ) {
 			$tableSql = $database->prepare( 'SHOW COLUMNS FROM %i', $requiredTable );

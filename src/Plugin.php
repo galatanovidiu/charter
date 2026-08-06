@@ -12,6 +12,7 @@ namespace GalatanOvidiu\Charter;
 use GalatanOvidiu\Charter\Admin\SettingsPage;
 use GalatanOvidiu\Charter\Admin\ConnectedAppsPage;
 use GalatanOvidiu\Charter\Http\AuthorizationController;
+use GalatanOvidiu\Charter\Http\BoundedDirectJsonFetcher;
 use GalatanOvidiu\Charter\Http\CorsPolicy;
 use GalatanOvidiu\Charter\Http\MetadataController;
 use GalatanOvidiu\Charter\Http\RegistrationController;
@@ -19,6 +20,8 @@ use GalatanOvidiu\Charter\Http\RevocationController;
 use GalatanOvidiu\Charter\Http\TokenController;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
 use GalatanOvidiu\Charter\OAuth\ClientCleanup;
+use GalatanOvidiu\Charter\OAuth\ClientMetadataResolver;
+use GalatanOvidiu\Charter\OAuth\ClientMetadataSnapshotStore;
 use GalatanOvidiu\Charter\OAuth\ClientGovernance;
 use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\CredentialHasher;
@@ -28,6 +31,7 @@ use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\OAuth\UserSecurityEvents;
 use GalatanOvidiu\Charter\Rest\BearerAuthenticator;
 use GalatanOvidiu\Charter\Security\AuditLog;
+use GalatanOvidiu\Charter\Security\BoundedHostResolver;
 use GalatanOvidiu\Charter\Security\RateLimiter;
 use GalatanOvidiu\Charter\Site\SiteState;
 
@@ -132,21 +136,30 @@ final class Plugin {
 	private readonly RateLimiter $rateLimiter;
 
 	/**
+	 * Reusable validated Client ID Metadata Document projections.
+	 *
+	 * @var ClientMetadataSnapshotStore
+	 */
+	private readonly ClientMetadataSnapshotStore $clientMetadataSnapshots;
+
+	/**
 	 * Prevents direct construction.
 	 *
 	 * @since 0.1.0
 	 */
 	private function __construct() {
-		$this->siteState           = new SiteState();
-		$this->clients             = new ClientRegistry();
-		$this->credentials         = new CredentialStore( new CredentialHasher() );
-		$this->audit               = new AuditLog();
-		$this->rateLimiter         = new RateLimiter();
-		$this->clientGovernance    = new ClientGovernance( $this->clients, $this->credentials, $this->audit );
-		$this->dynamicRegistration = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
-		$this->authorization       = new AuthorizationService( $this->siteState, $this->clients, $this->credentials );
-		$this->tokens              = new TokenService( $this->siteState, $this->clients, $this->credentials );
-		$this->bearerAuthenticator = new BearerAuthenticator( $this->siteState, $this->tokens );
+		$this->siteState               = new SiteState();
+		$this->clients                 = new ClientRegistry();
+		$this->credentials             = new CredentialStore( new CredentialHasher() );
+		$this->clientMetadataSnapshots = new ClientMetadataSnapshotStore();
+		$this->audit                   = new AuditLog();
+		$this->rateLimiter             = new RateLimiter();
+		$this->clientGovernance        = new ClientGovernance( $this->clients, $this->credentials, $this->audit, $this->clientMetadataSnapshots );
+		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit );
+		$clientMetadata                = new ClientMetadataResolver( $this->clients, $this->clientMetadataSnapshots, new BoundedHostResolver(), new BoundedDirectJsonFetcher() );
+		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit );
+		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials );
+		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens );
 
 		if ( function_exists( 'add_action' ) ) {
 			$this->registerHooks();
@@ -223,6 +236,11 @@ final class Plugin {
 	 */
 	public function credentials(): CredentialStore {
 		return $this->credentials;
+	}
+
+	/** Returns reusable CIMD projections for bounded cleanup and tests. */
+	public function clientMetadataSnapshots(): ClientMetadataSnapshotStore {
+		return $this->clientMetadataSnapshots;
 	}
 
 	/**

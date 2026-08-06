@@ -21,14 +21,16 @@ final class ClientGovernance {
 	/**
 	 * Creates site client governance.
 	 *
-	 * @param ClientRegistry  $clients Client registry.
-	 * @param CredentialStore $credentials Grant persistence.
-	 * @param AuditLog        $audit Security event ledger.
+	 * @param ClientRegistry              $clients Client registry.
+	 * @param CredentialStore             $credentials Grant persistence.
+	 * @param AuditLog                    $audit Security event ledger.
+	 * @param ClientMetadataSnapshotStore $snapshots Reusable remote metadata.
 	 */
 	public function __construct(
 		private readonly ClientRegistry $clients,
 		private readonly CredentialStore $credentials,
-		private readonly AuditLog $audit
+		private readonly AuditLog $audit,
+		private readonly ClientMetadataSnapshotStore $snapshots
 	) {
 	}
 
@@ -45,6 +47,7 @@ final class ClientGovernance {
 			return false;
 		}
 		$this->credentials->revokeAllGrantsForClient( $issuer, $clientId, $timestamp, 'administrator_client_block' );
+		$this->discardSnapshot( $issuer, $clientId );
 		$this->audit->record( $issuer, 'client_blocked', 'success', 'administrator_action', $actorUserId, null, $clientId, null, $timestamp );
 
 		return true;
@@ -63,6 +66,7 @@ final class ClientGovernance {
 			return false;
 		}
 		$this->credentials->revokeAllGrantsForClient( $issuer, $clientId, $timestamp, 'administrator_client_delete' );
+		$this->discardSnapshot( $issuer, $clientId );
 		$this->audit->record( $issuer, 'client_deleted', 'success', 'administrator_action', $actorUserId, null, $clientId, null, $timestamp );
 
 		return true;
@@ -85,5 +89,20 @@ final class ClientGovernance {
 		$this->audit->record( $issuer, 'client_deleted', 'success', 'abandoned_registration_cleanup', null, null, $clientId, null, $timestamp );
 
 		return true;
+	}
+
+	/**
+	 * Discards reusable remote metadata after governance.
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @param string $clientId Exact client identifier.
+	 */
+	private function discardSnapshot( string $issuer, string $clientId ): void {
+		try {
+			$this->snapshots->delete( $issuer, $clientId );
+		} catch ( \RuntimeException ) {
+			// The terminal registry state remains authoritative and fail-closed.
+			return;
+		}
 	}
 }

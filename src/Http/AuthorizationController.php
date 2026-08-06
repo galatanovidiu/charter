@@ -11,6 +11,7 @@ namespace GalatanOvidiu\Charter\Http;
 
 use GalatanOvidiu\Charter\OAuth\AuthorizationRequest;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
+use GalatanOvidiu\Charter\OAuth\ClientRegistry;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
 use GalatanOvidiu\Charter\Site\SiteState;
 
@@ -142,12 +143,15 @@ final class AuthorizationController {
 			$this->renderError( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
 		}
 
-		$action       = ( new EndpointUrls( $identity->issuer() ) )->authorizationEndpoint();
-		$redirectHost = wp_parse_url( $request->redirectUri(), PHP_URL_HOST );
-		$redirectHost = is_string( $redirectHost ) ? $redirectHost : $request->redirectUri();
-		$nonce        = wp_nonce_field( 'charter_oauth_consent:' . $transaction, '_wpnonce', true, false );
-		$html         = sprintf(
-			'<h1>%1$s</h1><p><strong>%2$s</strong> %3$s</p><dl><dt>%4$s</dt><dd>%5$s</dd><dt>%6$s</dt><dd>%7$s</dd><dt>%8$s</dt><dd>%9$s</dd><dt>%10$s</dt><dd>%11$s</dd></dl><p>%12$s</p><form method="post" action="%13$s">%14$s<input type="hidden" name="transaction" value="%15$s"><p><button type="submit" name="decision" value="approve" class="button button-primary">%16$s</button> <button type="submit" name="decision" value="deny" class="button">%17$s</button></p></form>',
+		$action          = ( new EndpointUrls( $identity->issuer() ) )->authorizationEndpoint();
+		$redirectHost    = wp_parse_url( $request->redirectUri(), PHP_URL_HOST );
+		$redirectHost    = is_string( $redirectHost ) ? $redirectHost : $request->redirectUri();
+		$nonce           = wp_nonce_field( 'charter_oauth_consent:' . $transaction, '_wpnonce', true, false );
+		$loopbackWarning = self::hasOnlyLoopbackRedirects( $request )
+			? '<p><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
+			: '';
+		$html            = sprintf(
+			'<h1>%1$s</h1><p><strong>%2$s</strong> %3$s</p><dl><dt>%4$s</dt><dd>%5$s</dd><dt>%6$s</dt><dd>%7$s</dd><dt>%8$s</dt><dd>%9$s</dd><dt>%10$s</dt><dd>%11$s</dd></dl><p>%12$s</p>%13$s<form method="post" action="%14$s">%15$s<input type="hidden" name="transaction" value="%16$s"><p><button type="submit" name="decision" value="approve" class="button button-primary">%17$s</button> <button type="submit" name="decision" value="deny" class="button">%18$s</button></p></form>',
 			esc_html__( 'Authorize WordPress access', 'charter' ),
 			esc_html( $request->client()->name() ),
 			esc_html__( 'is requesting delegated access.', 'charter' ),
@@ -162,6 +166,7 @@ final class AuthorizationController {
 				? esc_html__( 'Requested. Approval allows this client to use rotating refresh tokens until the grant expires or is revoked.', 'charter' )
 				: esc_html__( 'Not requested.', 'charter' ),
 			esc_html__( 'WordPress permissions still control every operation performed as your account.', 'charter' ),
+			$loopbackWarning,
 			esc_url( $action ),
 			$nonce,
 			esc_attr( $transaction ),
@@ -171,6 +176,25 @@ final class AuthorizationController {
 
 		$this->sendHtmlHeaders();
 		wp_die( $html, esc_html__( 'OAuth authorization', 'charter' ), array( 'response' => 200 ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Every dynamic value in the assembled consent HTML is escaped.
+	}
+
+	/**
+	 * Reports whether a CIMD client publishes only device-local callback hosts.
+	 *
+	 * @param AuthorizationRequest $request Validated authorization request.
+	 */
+	private static function hasOnlyLoopbackRedirects( AuthorizationRequest $request ): bool {
+		if ( ClientRegistry::SOURCE_CIMD !== $request->client()->source() || array() === $request->client()->redirectUris() ) {
+			return false;
+		}
+		foreach ( $request->client()->redirectUris() as $redirectUri ) {
+			$host = wp_parse_url( $redirectUri, PHP_URL_HOST );
+			if ( ! is_string( $host ) || ! in_array( strtolower( trim( $host, '[]' ) ), array( 'localhost', '127.0.0.1', '::1' ), true ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -194,6 +218,9 @@ final class AuthorizationController {
 			);
 			wp_redirect( $redirect, 302, 'Charter' ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- The exception carries only a prevalidated registered redirect.
 			exit;
+		}
+		if ( is_int( $exception->retryAfter() ) ) {
+			header( 'Retry-After: ' . max( 1, $exception->retryAfter() ) );
 		}
 
 		$this->renderError( $exception->error(), $exception->getMessage(), $exception->status() );

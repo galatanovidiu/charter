@@ -69,6 +69,7 @@ final class DynamicRegistrationTest extends WP_UnitTestCase {
 		Schema::install();
 		$plugin->credentials()->deleteAll();
 		$plugin->clients()->deleteAll();
+		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
 		$plugin->rateLimiter()->deleteAll();
 		$plugin->siteState()->delete();
@@ -94,6 +95,7 @@ final class DynamicRegistrationTest extends WP_UnitTestCase {
 		$plugin = Plugin::boot();
 		$plugin->credentials()->deleteAll();
 		$plugin->clients()->deleteAll();
+		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
 		$plugin->rateLimiter()->deleteAll();
 		$plugin->siteState()->delete();
