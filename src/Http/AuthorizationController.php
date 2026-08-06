@@ -148,7 +148,8 @@ final class AuthorizationController {
 		$redirectHost    = is_string( $redirectHost ) ? $redirectHost : $request->redirectUri();
 		$nonce           = wp_nonce_field( 'charter_oauth_consent:' . $transaction, '_wpnonce', true, false );
 		$scopeHtml       = self::scopeConsentHtml( $request );
-		$scriptHtml      = self::consentScriptHtml();
+		$scriptNonce     = bin2hex( random_bytes( 16 ) );
+		$scriptHtml      = self::consentScriptHtml( $scriptNonce );
 		$loopbackWarning = self::hasOnlyLoopbackRedirects( $request )
 			? '<p><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
 			: '';
@@ -178,19 +179,27 @@ final class AuthorizationController {
 			$scriptHtml
 		);
 
-		$this->sendHtmlHeaders();
+		$this->sendHtmlHeaders( $scriptNonce, $request->redirectUri() );
 		wp_die( $html, esc_html__( 'OAuth authorization', 'charter' ), array( 'response' => 200 ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Every dynamic value in the assembled consent HTML is escaped.
 	}
 
 	/**
 	 * Renders the queued consent interaction script for the standalone wp_die document.
 	 *
+	 * @param string $nonce Per-response Content Security Policy nonce.
 	 * @return string WordPress-generated script markup.
 	 */
-	private static function consentScriptHtml(): string {
+	private static function consentScriptHtml( string $nonce ): string {
 		$scriptPath = CHARTER_PATH . 'assets/js/oauth-consent.js';
 		$digest     = hash_file( 'sha256', $scriptPath );
 		$version    = CHARTER_VERSION . ( is_string( $digest ) ? '.' . substr( $digest, 0, 12 ) : '' );
+		$addNonce   = static function ( array $attributes ) use ( $nonce ): array {
+			if ( 'charter-oauth-consent-js' === ( $attributes['id'] ?? null ) ) {
+				$attributes['nonce'] = $nonce;
+			}
+
+			return $attributes;
+		};
 
 		wp_enqueue_script(
 			'charter-oauth-consent',
@@ -203,11 +212,22 @@ final class AuthorizationController {
 			)
 		);
 
+		add_filter( 'wp_script_attributes', $addNonce );
+		$bufferLevel = ob_get_level();
 		ob_start();
-		wp_print_scripts( 'charter-oauth-consent' );
-		$html = ob_get_clean();
+		$html = '';
+		try {
+			wp_print_scripts( 'charter-oauth-consent' );
+			$printed = ob_get_clean();
+			$html    = is_string( $printed ) ? $printed : '';
+		} finally {
+			remove_filter( 'wp_script_attributes', $addNonce );
+			while ( ob_get_level() > $bufferLevel ) {
+				ob_end_clean();
+			}
+		}
 
-		return is_string( $html ) ? $html : '';
+		return $html;
 	}
 
 	/**
@@ -299,12 +319,46 @@ final class AuthorizationController {
 	 * Applies browser authorization response hardening.
 	 *
 	 * @since 0.1.0
+	 *
+	 * @param string|null $scriptNonce Optional nonce for the consent interaction script.
+	 * @param string|null $redirectUri Optional validated OAuth callback URI.
 	 */
-	private function sendHtmlHeaders(): void {
+	private function sendHtmlHeaders( ?string $scriptNonce = null, ?string $redirectUri = null ): void {
+		$scriptPolicy   = null === $scriptNonce ? '' : " script-src 'nonce-" . $scriptNonce . "';";
+		$formAction     = null === $redirectUri ? null : self::cspOrigin( $redirectUri );
+		$formActionList = "'self'" . ( null === $formAction ? '' : ' ' . $formAction );
+
 		nocache_headers();
-		header( "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" );
+		header( "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';" . $scriptPolicy . ' form-action ' . $formActionList . "; frame-ancestors 'none'; base-uri 'none'" );
 		header( 'X-Frame-Options: DENY' );
 		header( 'Referrer-Policy: no-referrer' );
+	}
+
+	/**
+	 * Returns the exact origin source expression for one validated callback.
+	 *
+	 * CSP redirect matching ignores source paths, so the validated callback
+	 * origin is the narrowest source that permits the authorization response.
+	 *
+	 * @param string $uri Validated OAuth callback URI.
+	 */
+	private static function cspOrigin( string $uri ): ?string {
+		$parts = wp_parse_url( $uri );
+		if (
+			false === $parts
+			|| ! is_string( $parts['scheme'] ?? null )
+			|| ! is_string( $parts['host'] ?? null )
+			|| ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true )
+		) {
+			return null;
+		}
+
+		$host = strtolower( trim( $parts['host'], '[]' ) );
+		if ( str_contains( $host, ':' ) ) {
+			$host = '[' . $host . ']';
+		}
+
+		return strtolower( $parts['scheme'] ) . '://' . $host . ( isset( $parts['port'] ) ? ':' . $parts['port'] : '' );
 	}
 
 	/**

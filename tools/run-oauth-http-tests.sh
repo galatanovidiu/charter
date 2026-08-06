@@ -308,6 +308,7 @@ assert_status 302 "${charter_http_status}" 'WordPress login'
 
 charter_http_status="$(curl --silent --show-error \
 	-b "${charter_http_tmp}/cookies.txt" \
+	-D "${charter_http_tmp}/consent-page.headers" \
 	-o "${charter_http_tmp}/consent.html" \
 	-w '%{http_code}' \
 	"${charter_http_authorization_url}")"
@@ -317,6 +318,42 @@ if ! grep -q 'data-charter-oauth-consent' "${charter_http_tmp}/consent.html" \
 	|| ! grep -q 'data-charter-oauth-status' "${charter_http_tmp}/consent.html" \
 	|| ! grep -q '/assets/js/oauth-consent.js' "${charter_http_tmp}/consent.html"; then
 	echo 'OAuth consent did not include the one-submit progress behavior.' >&2
+	exit 1
+fi
+
+charter_http_script_nonce="$(php -r '
+	$document = new DOMDocument();
+	@$document->loadHTMLFile( $argv[1] );
+	foreach ( $document->getElementsByTagName( "script" ) as $script ) {
+		if ( str_contains( $script->getAttribute( "src" ), "/assets/js/oauth-consent.js" ) ) {
+			echo $script->getAttribute( "nonce" );
+			exit;
+		}
+	}
+	exit( 1 );
+' "${charter_http_tmp}/consent.html")"
+if [[ -z "${charter_http_script_nonce}" ]] \
+	|| ! grep -Fqi "script-src 'nonce-${charter_http_script_nonce}'" "${charter_http_tmp}/consent-page.headers"; then
+	echo 'OAuth consent did not authorize its interaction script with a matching CSP nonce.' >&2
+	exit 1
+fi
+unset charter_http_script_nonce
+if ! grep -Fqi "form-action 'self' https://client.example.test;" "${charter_http_tmp}/consent-page.headers"; then
+	echo 'OAuth consent did not authorize its exact validated callback origin in form-action.' >&2
+	exit 1
+fi
+
+charter_http_loopback_url="${charter_http_authorization_url/charter-http-client/charter-http-loopback-client}"
+charter_http_loopback_url="${charter_http_loopback_url/https%3A%2F%2Fclient.example.test%2Fcallback/http%3A%2F%2Flocalhost%3A3118%2Fcallback}"
+charter_http_status="$(curl --silent --show-error \
+	-b "${charter_http_tmp}/cookies.txt" \
+	-D "${charter_http_tmp}/loopback-consent.headers" \
+	-o "${charter_http_tmp}/loopback-consent.html" \
+	-w '%{http_code}' \
+	"${charter_http_loopback_url}")"
+assert_status 200 "${charter_http_status}" 'loopback OAuth consent'
+if ! grep -Fqi "form-action 'self' http://localhost:3118;" "${charter_http_tmp}/loopback-consent.headers"; then
+	echo 'Loopback OAuth consent did not authorize its exact runtime callback origin in form-action.' >&2
 	exit 1
 fi
 

@@ -43,6 +43,13 @@ $charterHttpPlugin->clients()->registerPublicClient(
 	true
 );
 
+$charterHttpPlugin->clients()->registerPublicClient(
+	$charterHttpIdentity->issuer(),
+	'charter-http-loopback-client',
+	'Charter HTTP loopback client',
+	array( 'http://localhost:3118/callback' )
+);
+
 $charterHttpUser = get_user_by( 'login', 'charter-oauth-user' );
 if ( false === $charterHttpUser ) {
 	$charterHttpUserId = wp_create_user( 'charter-oauth-user', 'charter-http-password', 'charter-oauth-user@example.test' );
