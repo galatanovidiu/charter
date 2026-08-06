@@ -80,23 +80,39 @@ jobs:
               run: |
                   composer check
                   npm run format:check
+                  npm run audit
 
             - name: Resolve the latest WordPress 6.9 patch
               run: |
                   echo "WP_ENV_CORE=$(bash tools/resolve-wordpress-core.sh)" >> "${GITHUB_ENV}"
 
-            - name: Run integration tests
+            - name: Run WordPress integration tests
               env:
                   WP_ENV_PHP_VERSION: '8.4'
               run: npm run test:integration:ci
 
-            - name: Build and inspect the ZIP
-              run: bash tools/prepare-artifact.sh
+            - name: Run complete OAuth behavior matrix
+              env:
+                  WP_ENV_PHP_VERSION: '8.4'
+              run: |
+                  npm run test:oauth:http:ci
+                  npm run test:network-admin:http:ci
+                  npm run test:slice0:multisite:ci
+                  npm run test:slice0:rest-auth:ci
+                  npm run test:slice0:discovery-publication:ci
+                  npm run test:slice0:atomic:matrix
+                  npm run test:slice0:cimd-outbound-safety:ci
+
+            - name: Build and inspect reproducible ZIP bytes
+              run: npm run artifact:reproducible
 
             - name: Install and activate the ZIP in a clean site
               env:
                   WP_ENV_PHP_VERSION: '8.4'
               run: npm run artifact:test
+
+            - name: Check release inputs and artifact for secret-like content
+              run: npm run secret:check
 
             - name: Run Plugin Check against the extracted artifact
               uses: WordPress/plugin-check-action@98a1788320d0add90df2d8183934ecccbc4e05d2 # v1.1.7

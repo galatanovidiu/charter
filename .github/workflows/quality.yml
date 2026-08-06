@@ -35,7 +35,7 @@ jobs:
               run: composer audit --locked
 
             - name: Check PHP syntax
-              run: find charter.php src tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+              run: find charter.php uninstall.php src tests tools -type f -name '*.php' -print0 | xargs -0 -n1 php -l
 
             - name: Run PHPCS
               run: composer lint

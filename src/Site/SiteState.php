@@ -183,7 +183,7 @@ final class SiteState {
 			return false;
 		}
 
-		$requestHost = $_SERVER['HTTP_HOST'] ?? null; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Untrusted input is parsed and compared, never used to construct the canonical identity.
+		$requestHost = $_SERVER['HTTP_HOST'] ?? null; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Raw server transport metadata is parsed and compared, never used to construct the canonical identity.
 		if ( ! is_string( $requestHost ) || '' === $requestHost ) {
 			return 'cli' === PHP_SAPI;
 		}

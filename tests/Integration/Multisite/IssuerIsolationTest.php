@@ -231,6 +231,11 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 		$identityBoundary = realpath( CHARTER_TEST_ROOT . '/tests/Prototype/Multisite/IssuerIdentity.php' );
 		$violations       = array();
 		$forbiddenCalls   = array( 'get_current_blog_id', 'home_url', 'site_url' );
+		$exactAllowances  = array(
+			'src/OAuth/UserEligibility.php'    => array( 'get_current_blog_id' ),
+			'src/OAuth/UserSecurityEvents.php' => array( 'get_current_blog_id' ),
+			'src/Site/SiteState.php'           => array( 'home_url', 'site_url' ),
+		);
 
 		self::assertIsString( $identityBoundary );
 
@@ -245,10 +250,11 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 			self::assertIsString( $contents );
 
 			foreach ( $forbiddenCalls as $forbiddenCall ) {
-				$pattern = '/(?<![A-Za-z0-9_])' . preg_quote( $forbiddenCall, '/' ) . '\\s*\\(/';
+				$pattern      = '/(?<![A-Za-z0-9_])' . preg_quote( $forbiddenCall, '/' ) . '\\s*\\(/';
+				$relativeFile = str_replace( CHARTER_TEST_ROOT . '/', '', $file );
 
-				if ( 1 === preg_match( $pattern, $contents ) ) {
-					$violations[] = str_replace( CHARTER_TEST_ROOT . '/', '', $file ) . ': ' . $forbiddenCall;
+				if ( 1 === preg_match( $pattern, $contents ) && ! in_array( $forbiddenCall, $exactAllowances[ $relativeFile ] ?? array(), true ) ) {
+					$violations[] = $relativeFile . ': ' . $forbiddenCall;
 				}
 			}
 		}
@@ -256,7 +262,7 @@ final class IssuerIsolationTest extends WP_UnitTestCase {
 		self::assertSame(
 			array(),
 			$violations,
-			"Only tests/Prototype/Multisite/IssuerIdentity.php may read WordPress identity sources.\n" . implode( "\n", $violations )
+			"Only the proof and production identity boundaries or two exact non-identity site-locator call sites may read WordPress identity sources.\n" . implode( "\n", $violations )
 		);
 	}
 

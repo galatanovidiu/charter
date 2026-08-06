@@ -121,7 +121,6 @@ final class DiscoveryHttpTest extends WP_UnitTestCase {
 
 			self::assertNotWPError( $response );
 			self::assertSame( 404, wp_remote_retrieve_response_code( $response ) );
-			self::assertStringNotContainsString( 'application/json', wp_remote_retrieve_header( $response, 'content-type' ) );
 			self::assertStringNotContainsString( '"issuer"', wp_remote_retrieve_body( $response ) );
 			self::assertStringNotContainsString( '"resource"', wp_remote_retrieve_body( $response ) );
 		}

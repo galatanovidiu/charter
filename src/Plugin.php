@@ -239,7 +239,7 @@ final class Plugin {
 	 * @param bool $networkWide Whether WordPress is network-activating the plugin.
 	 */
 	public static function activate( bool $networkWide = false ): void {
-		if ( is_multisite() && $networkWide ) {
+		if ( is_multisite() || $networkWide ) {
 			return;
 		}
 
@@ -363,14 +363,23 @@ final class Plugin {
 	}
 
 	/**
-	 * Prepares an existing active single site after a plugin-code upgrade.
+	 * Upgrades storage for an existing active issuer after a plugin-code upgrade.
 	 *
-	 * Network-active sites remain Available until explicitly selected.
+	 * Network-active Available sites remain dormant until explicitly selected.
 	 *
 	 * @since 0.1.0
 	 */
 	public function ensureCurrentSiteReady(): void {
-		if ( SiteState::AVAILABLE === $this->siteState->state() && NetworkActivation::isActive() ) {
+		if ( is_multisite() ) {
+			if ( SiteState::AVAILABLE === $this->siteState->state() ) {
+				return;
+			}
+
+			$installed = Schema::maybeInstall();
+			if ( $installed ) {
+				flush_rewrite_rules( false );
+			}
+
 			return;
 		}
 
@@ -389,12 +398,19 @@ final class Plugin {
 	 * @since 0.1.0
 	 */
 	private function registerHooks(): void {
+		$settings = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit, $this->containment, $this->signingKeys );
+		if ( is_multisite() && ! NetworkActivation::isActive() ) {
+			add_action( 'admin_menu', array( $settings, 'registerPage' ) );
+
+			return;
+		}
+
+		Schema::registerHooks();
 		$metadata      = new MetadataController( $this->siteState, $this->accessPolicy, $this->containment, $this->signingKeys );
 		$tokens        = new TokenController( $this->tokens );
 		$revocation    = new RevocationController( $this->tokens );
 		$registration  = new RegistrationController( $this->dynamicRegistration );
 		$authorization = new AuthorizationController( $this->siteState, $this->authorization );
-		$settings      = new SettingsPage( $this->siteState, $this->clients, $this->credentials, $this->clientGovernance, $this->grantGovernance, $this->audit, $this->containment, $this->signingKeys );
 		$connectedApps = new ConnectedAppsPage( $this->siteState, $this->clients, $this->credentials );
 		$networkAdmin  = new NetworkAdminPage( new NetworkSiteControl( $this->siteState, $this->credentials, $this->grantGovernance, $this->audit, $this->containment, $this->signingKeys ) );
 		$userEvents    = new UserSecurityEvents( $this->siteState, $this->credentials );

@@ -308,7 +308,7 @@ final class ConnectedAppsPage {
 	 * @param string $name Field name.
 	 */
 	private static function postScalar( string $name ): string {
-		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- The action verifies its grant-bound nonce immediately after parsing the bounded identifier.
+		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Returned only after explicit unslashing; the owning action validates the bounded identifier and verifies its grant-bound nonce.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
 	}

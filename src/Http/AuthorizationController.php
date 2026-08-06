@@ -53,7 +53,7 @@ final class AuthorizationController {
 	 * @since 0.1.0
 	 */
 	public function handle(): void {
-		$method = $_SERVER['REQUEST_METHOD'] ?? 'GET'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Runtime type and fixed method comparison only.
+		$method = $_SERVER['REQUEST_METHOD'] ?? 'GET'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Raw server transport metadata is checked against one fixed method.
 		$method = is_string( $method ) ? $method : 'GET';
 		if ( 'POST' === strtoupper( $method ) ) {
 			$this->completeConsent();
@@ -111,14 +111,14 @@ final class AuthorizationController {
 	 * @since 0.1.0
 	 */
 	private function completeConsent(): void {
-		$transaction = self::scalarInput( $_POST['transaction'] ?? null ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- The nonce action is derived from this bounded opaque value.
-		$nonce       = self::scalarInput( $_POST['_wpnonce'] ?? null ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Verified immediately below.
+		$transaction = self::scalarInput( $_POST['transaction'] ?? null ); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- The helper unslashes this opaque bounded value before the transaction-bound nonce verifies it.
+		$nonce       = self::scalarInput( $_POST['_wpnonce'] ?? null ); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- The helper unslashes this nonce before immediate verification.
 
 		if ( '' === $transaction || ! wp_verify_nonce( $nonce, 'charter_oauth_consent:' . $transaction ) ) {
 			$this->renderError( 'invalid_request', 'The authorization consent is invalid or expired.', 400 );
 		}
 
-		$approved = 'approve' === self::scalarInput( $_POST['decision'] ?? null ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Covered by the transaction-bound nonce above.
+		$approved = 'approve' === self::scalarInput( $_POST['decision'] ?? null ); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- The helper unslashes this value before one fixed comparison covered by the verified nonce.
 
 		try {
 			$redirect = $this->authorization->complete( $transaction, get_current_user_id(), $approved );
@@ -285,7 +285,7 @@ final class AuthorizationController {
 	 * @throws ProtocolException When the query is too large or ambiguous.
 	 */
 	private static function authorizationParametersFromQuery(): array {
-		$query = $_SERVER['QUERY_STRING'] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed below without using PHP's lossy parameter-name normalization.
+		$query = $_SERVER['QUERY_STRING'] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Raw server transport metadata is parsed below without PHP's lossy parameter-name normalization.
 		$query = is_string( $query ) ? $query : '';
 		if ( strlen( $query ) > 16384 ) {
 			throw new ProtocolException( 'invalid_request', 'The authorization request is too large.' );

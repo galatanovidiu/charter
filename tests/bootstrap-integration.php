@@ -28,7 +28,14 @@ tests_add_filter(
 		if ( ! defined( 'CHARTER_DEVELOPMENT_HOSTS' ) ) {
 			define( 'CHARTER_DEVELOPMENT_HOSTS', array( 'example.org' ) );
 		}
-		require_once CHARTER_TEST_ROOT . '/charter.php';
+		if ( '1' !== getenv( 'CHARTER_SKIP_PRODUCTION_PLUGIN' ) ) {
+			if ( is_multisite() ) {
+				$networkPlugins = get_site_option( 'active_sitewide_plugins', array() );
+				$networkPlugins[ plugin_basename( CHARTER_TEST_ROOT . '/charter.php' ) ] = time();
+				update_site_option( 'active_sitewide_plugins', $networkPlugins );
+			}
+			require_once CHARTER_TEST_ROOT . '/charter.php';
+		}
 	}
 );
 

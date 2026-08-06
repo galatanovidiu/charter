@@ -223,8 +223,10 @@ $requiredEntries = array(
 	'charter/LICENSE',
 	'charter/charter.php',
 	'charter/readme.txt',
+	'charter/uninstall.php',
 	'charter/src/Autoloader.php',
 	'charter/src/Plugin.php',
+	'charter/src/Uninstaller.php',
 );
 
 foreach ( $requiredEntries as $requiredEntry ) {

@@ -19,6 +19,7 @@ use GalatanOvidiu\Charter\OAuth\GrantGovernance;
 use GalatanOvidiu\Charter\OAuth\GrantRecord;
 use GalatanOvidiu\Charter\OAuth\SigningKeyLifecycle;
 use GalatanOvidiu\Charter\Security\AuditLog;
+use GalatanOvidiu\Charter\Site\NetworkActivation;
 use GalatanOvidiu\Charter\Site\SiteState;
 use InvalidArgumentException;
 use RuntimeException;
@@ -102,6 +103,18 @@ final class SettingsPage {
 	 */
 	public function render(): void {
 		$this->requireAdministrator();
+		$networkActivationRequired = is_multisite() && ! NetworkActivation::isActive();
+		if ( $networkActivationRequired ) {
+			?>
+			<div class="wrap">
+				<h1><?php esc_html_e( 'Charter OAuth', 'charter' ); ?></h1>
+				<div class="notice notice-error"><p><?php esc_html_e( 'Charter OAuth requires Network Activation on WordPress Multisite so each site issuer can be governed and permanently deleted without retaining hidden OAuth tables.', 'charter' ); ?></p></div>
+				<p><?php esc_html_e( 'Ask a Network Administrator to network-activate Charter, then prepare this site under Network Settings > Charter OAuth.', 'charter' ); ?></p>
+			</div>
+			<?php
+
+			return;
+		}
 
 		$identity   = $this->siteState->identity();
 		$clients    = null === $identity ? array() : $this->clients->listForIssuer( $identity->issuer() );
@@ -745,7 +758,7 @@ final class SettingsPage {
 	 * @param string $name Field name.
 	 */
 	private static function postScalar( string $name ): string {
-		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Each action verifies its form nonce before using security-sensitive values.
+		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Returned only after explicit unslashing; each owning action validates the bounded value and verifies its nonce.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
 	}
@@ -786,7 +799,7 @@ final class SettingsPage {
 	 * @param string $name Query field name.
 	 */
 	private static function getScalar( string $name ): string {
-		$value = $_GET[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only pagination cannot mutate state.
+		$value = $_GET[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Returned only after explicit unslashing for bounded read-only pagination.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
 	}

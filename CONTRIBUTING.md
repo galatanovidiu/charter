@@ -26,6 +26,8 @@ npm run audit
 npm run format:check
 ```
 
+The Composer check validates locked metadata and advisories, runs the complete PHPCS standard, performs static analysis, and runs pure unit tests.
+
 Apply PHP and repository formatting:
 
 ```bash
@@ -57,14 +59,27 @@ npm run test:slice0:multisite:ci
 
 This command resolves the latest WordPress 6.9 patch, runs the Multisite integration suite, prints finite logs on failure, and destroys the environment.
 
-## Verify the distributable
-
-Build, inspect, install, activate, and run Plugin Check against the same ZIP used by continuous integration:
+Run the shipped behavior boundaries before release-facing changes:
 
 ```bash
-npm run build:zip
-npm run artifact:verify
-npm run artifact:test
+npm run test:oauth:http:ci
+npm run test:network-admin:http:ci
+npm run test:slice0:rest-auth:ci
+npm run test:slice0:discovery-publication:ci
+npm run test:slice0:atomic:matrix
+npm run test:slice0:cimd-outbound-safety:ci
 ```
 
-Do not add production Composer dependencies without revisiting the no-`vendor/` distribution contract. Do not add `uninstall.php` until data-retention behavior is explicitly defined.
+These environments are disposable proofs. Do not copy prototype code from `tests/Prototype/` into production.
+
+## Verify the distributable
+
+Build the ZIP twice, compare exact bytes, inspect it, exercise install, upgrade, deactivation, uninstall, and run Plugin Check against the artifact:
+
+```bash
+npm run artifact:reproducible
+npm run artifact:test
+npm run secret:check
+```
+
+Do not add production Composer dependencies without revisiting the no-`vendor/` distribution contract. Deactivation must retain Charter data. `uninstall.php` and permanent Multisite site deletion must remove only the exact Charter-owned data documented in [Privacy and data retention](docs/privacy.md).

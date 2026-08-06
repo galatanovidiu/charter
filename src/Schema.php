@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace GalatanOvidiu\Charter;
 
 use RuntimeException;
+use WP_Site;
 
 /**
  * Installs the site-scoped OAuth credential table.
@@ -20,6 +21,12 @@ final class Schema {
 
 	private const VERSION_OPTION = 'charter_oauth_schema_version';
 	private const VERSION        = '7';
+
+	/** Registers Multisite deletion cleanup for Charter-owned site data. */
+	public static function registerHooks(): void {
+		add_filter( 'wpmu_drop_tables', array( self::class, 'addSiteTablesToDrop' ), 10, 2 );
+		add_action( 'wp_uninitialize_site', array( self::class, 'deleteSiteUserMetadata' ) );
+	}
 
 	/**
 	 * Reports whether the current site's expected schema version is installed.
@@ -241,6 +248,82 @@ final class Schema {
 	 */
 	public static function clientMetadataTable(): string {
 		return self::database()->prefix . 'charter_oauth_cimd_cache';
+	}
+
+	/**
+	 * Adds one site's exact Charter tables to WordPress's permanent deletion.
+	 *
+	 * Charter requires network activation on Multisite, so this filter is
+	 * always registered when Network Admin deletes an OAuth-capable site.
+	 *
+	 * @param array<string> $tables Core and plugin tables selected for deletion.
+	 * @param int           $siteId Permanently deleted WordPress site.
+	 * @return array<string> Complete exact table list.
+	 */
+	public static function addSiteTablesToDrop( array $tables, int $siteId ): array {
+		return array_values( array_unique( array_merge( $tables, self::tablesForSite( $siteId ) ) ) );
+	}
+
+	/**
+	 * Removes the deleted site's Charter user-notice cursor.
+	 *
+	 * @param WP_Site $site Permanently deleted WordPress site.
+	 */
+	public static function deleteSiteUserMetadata( WP_Site $site ): void {
+		self::deleteUserMetadataForSite( (int) $site->blog_id );
+	}
+
+	/**
+	 * Deletes Charter-owned user metadata for one exact site.
+	 *
+	 * @param int $siteId WordPress site identifier.
+	 * @throws RuntimeException When the authoritative deletion fails.
+	 */
+	public static function deleteUserMetadataForSite( int $siteId ): void {
+		$database = self::database();
+		$metaKey  = $database->get_blog_prefix( $siteId ) . 'charter_oauth_revocation_notice_cursor';
+		$result   = $database->delete( $database->usermeta, array( 'meta_key' => $metaKey ), array( '%s' ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Permanent site deletion must purge the exact site-owned cursor from global user metadata.
+		if ( false === $result ) {
+			throw new RuntimeException( 'charter_user_metadata_cleanup_failed' );
+		}
+	}
+
+	/**
+	 * Drops every Charter-owned custom table for one exact site.
+	 *
+	 * @param int $siteId WordPress site identifier.
+	 * @throws RuntimeException When a table cannot be dropped.
+	 */
+	public static function dropTablesForSite( int $siteId ): void {
+		$database = self::database();
+		foreach ( self::tablesForSite( $siteId ) as $table ) {
+			if ( false === $database->query( "DROP TABLE IF EXISTS `{$table}`" ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Exact internally derived table names are the uninstall authority.
+				throw new RuntimeException( 'charter_table_cleanup_failed' );
+			}
+			$existing = $database->get_var( $database->prepare( 'SHOW TABLES LIKE %s', $database->esc_like( $table ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Verifies the irreversible cleanup completed.
+			if ( $table === $existing ) {
+				throw new RuntimeException( 'charter_table_cleanup_failed' );
+			}
+		}
+	}
+
+	/**
+	 * Returns every Charter-owned custom table for one exact site.
+	 *
+	 * @param int $siteId WordPress site identifier.
+	 * @return list<string> Exact site-prefixed table names.
+	 */
+	public static function tablesForSite( int $siteId ): array {
+		$prefix = self::database()->get_blog_prefix( $siteId );
+
+		return array(
+			$prefix . 'charter_oauth_credentials',
+			$prefix . 'charter_oauth_grants',
+			$prefix . 'charter_oauth_clients',
+			$prefix . 'charter_oauth_rate_limits',
+			$prefix . 'charter_oauth_audit',
+			$prefix . 'charter_oauth_cimd_cache',
+		);
 	}
 
 	/**

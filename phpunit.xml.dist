@@ -16,6 +16,7 @@
 		</testsuite>
 		<testsuite name="integration">
 			<file>tests/Integration/PluginBootstrapTest.php</file>
+			<file>tests/Integration/UninstallLifecycleTest.php</file>
 			<directory suffix="Test.php">tests/Integration/OAuth</directory>
 		</testsuite>
 		<testsuite name="slice0-multisite">

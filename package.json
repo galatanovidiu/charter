@@ -27,7 +27,7 @@
 		"test:slice0:multisite:destroy": "wp-env destroy --config=.wp-env.slice0.json --force",
 		"test:slice0:multisite:ci": "bash tools/run-slice0-multisite-tests.sh",
 		"test:network-admin:http:ci": "bash tools/run-network-admin-http-tests.sh",
-		"test:slice0:rest-auth": "wp-env run cli --config=.wp-env.slice0.json --env-cwd=wp-content/plugins/charter env WP_MULTISITE=1 php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=slice0-rest-auth",
+		"test:slice0:rest-auth": "wp-env run cli --config=.wp-env.slice0.json --env-cwd=wp-content/plugins/charter env WP_MULTISITE=1 CHARTER_SKIP_PRODUCTION_PLUGIN=1 php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-integration.php --testsuite=slice0-rest-auth",
 		"test:slice0:rest-auth:process": "bash tools/run-slice0-rest-authentication.sh process",
 		"test:slice0:rest-auth:http": "bash tools/run-slice0-rest-authentication.sh http",
 		"test:slice0:rest-auth:ci": "bash tools/run-slice0-rest-authentication-tests.sh",
@@ -43,7 +43,9 @@
 		"test:slice0:cimd-outbound-safety:ci": "bash tools/run-slice0-cimd-outbound-safety.sh",
 		"build:zip": "bash tools/build-zip.sh",
 		"artifact:verify": "php tools/verify-archive.php build/charter.zip",
+		"artifact:reproducible": "bash tools/test-reproducible-artifact.sh",
 		"artifact:test": "bash tools/test-archive.sh",
+		"secret:check": "bash tools/check-secret-safety.sh",
 		"audit": "npm audit --audit-level=high",
 		"format": "prettier --no-error-on-unmatched-pattern --write \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
 		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""

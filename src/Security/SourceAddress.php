@@ -22,7 +22,7 @@ final class SourceAddress {
 	 * @since 0.1.0
 	 */
 	public static function current(): string {
-		$remote = $_SERVER['REMOTE_ADDR'] ?? null; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed strictly as an IP address and never displayed directly.
+		$remote = $_SERVER['REMOTE_ADDR'] ?? null; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Raw server transport metadata is parsed strictly as an IP address and never displayed directly.
 		if ( ! is_string( $remote ) ) {
 			return 'unknown';
 		}

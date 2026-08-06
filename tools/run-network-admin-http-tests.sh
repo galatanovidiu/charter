@@ -147,6 +147,27 @@ export WP_ENV_CORE="${WP_ENV_CORE:-$(bash tools/resolve-wordpress-core.sh)}"
 npm run test:slice0:multisite:destroy >/dev/null 2>&1 || true
 npm run test:slice0:multisite:start
 "${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp core version
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp plugin activate charter
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp eval '
+	global $wpdb;
+	$prefix = $wpdb->get_blog_prefix();
+	if ( false !== get_option( "charter_oauth_schema_version", false ) ) {
+		throw new RuntimeException( "Per-site activation initialized Charter state on Multisite." );
+	}
+	foreach ( array( "credentials", "grants", "clients", "rate_limits", "audit", "cimd_cache" ) as $suffix ) {
+		$table = $prefix . "charter_oauth_" . $suffix;
+		if ( $table === $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $wpdb->esc_like( $table ) ) ) ) {
+			throw new RuntimeException( "Per-site activation initialized Charter storage on Multisite." );
+		}
+	}
+	$routes = rest_get_server()->get_routes();
+	foreach ( array( "/charter/v1/token", "/charter/v1/revoke", "/charter/v1/register" ) as $route ) {
+		if ( isset( $routes[ $route ] ) ) {
+			throw new RuntimeException( "Per-site activation exposed a Charter OAuth endpoint on Multisite." );
+		}
+	}
+'
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp plugin deactivate charter
 "${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp plugin activate charter --network
 
 charter_network_site_output="$("${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp site create --slug=charter-network-http --title='Charter Network HTTP' --email=admin@example.com --porcelain)"
@@ -329,4 +350,46 @@ if [[ "$(json_field "${charter_network_state}" active_grants)" != '0' ]] \
 	exit 1
 fi
 
-printf 'Network Admin HTTP control-plane checks passed for one isolated site issuer.\n'
+fixture seed_deletion >/dev/null
+"${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp site delete "${charter_network_site_id}" --yes
+charter_network_deleted_state="$(fixture verify_deleted)"
+if [[ "$(json_field "${charter_network_deleted_state}" site_exists)" != '0' ]] \
+	|| [[ "$(json_field "${charter_network_deleted_state}" table_count)" != '0' ]] \
+	|| [[ "$(json_field "${charter_network_deleted_state}" cursor_count)" != '0' ]]; then
+	echo 'Permanent site deletion retained Charter-owned site data.' >&2
+	exit 1
+fi
+charter_network_site_id=''
+
+charter_network_uninstall_first="$("${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp site create --slug=charter-uninstall-first --title='Charter Uninstall First' --email=admin@example.com --porcelain | sed -n -E 's/^([0-9]+)$/\1/p' | tail -1)"
+charter_network_uninstall_second="$("${charter_network_wp_env[@]}" run cli --config="${charter_network_config}" wp site create --slug=charter-uninstall-second --title='Charter Uninstall Second' --email=admin@example.com --porcelain | sed -n -E 's/^([0-9]+)$/\1/p' | tail -1)"
+if [[ -z "${charter_network_uninstall_first}" ]] || [[ -z "${charter_network_uninstall_second}" ]]; then
+	echo 'The disposable Multisite uninstall fixtures could not be created.' >&2
+	exit 1
+fi
+
+for charter_network_uninstall_site in 1 "${charter_network_uninstall_first}" "${charter_network_uninstall_second}"; do
+	charter_network_site_id="${charter_network_uninstall_site}"
+	fixture seed_deletion >/dev/null
+done
+
+"${charter_network_wp_env[@]}" run cli \
+	--config="${charter_network_config}" \
+	--env-cwd=wp-content/plugins/charter \
+	wp eval 'GalatanOvidiu\Charter\Uninstaller::uninstall();'
+
+for charter_network_uninstall_site in 1 "${charter_network_uninstall_first}" "${charter_network_uninstall_second}"; do
+	charter_network_site_id="${charter_network_uninstall_site}"
+	charter_network_uninstall_state="$(fixture verify_deleted)"
+	if [[ "$(json_field "${charter_network_uninstall_state}" site_exists)" != '1' ]] \
+		|| [[ "$(json_field "${charter_network_uninstall_state}" table_count)" != '0' ]] \
+		|| [[ "$(json_field "${charter_network_uninstall_state}" cursor_count)" != '0' ]] \
+		|| [[ "$(json_field "${charter_network_uninstall_state}" option_count)" != '0' ]] \
+		|| [[ "$(json_field "${charter_network_uninstall_state}" cron_count)" != '0' ]]; then
+		echo "Multisite uninstall retained Charter-owned data for site ${charter_network_uninstall_site}." >&2
+		exit 1
+	fi
+done
+charter_network_site_id=''
+
+printf 'Network Admin HTTP, permanent site-deletion, and all-site uninstall checks passed for isolated site issuers.\n'

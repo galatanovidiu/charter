@@ -1,10 +1,10 @@
 # Charter
 
-Charter is a WordPress plugin for a secure, standards-compliant OAuth 2.1 authorization server.
+Charter is a WordPress OAuth 2.1 authorization server with site-local issuers, exact protected-resource boundaries, and WordPress-native administration.
 
-The current development build provides a working authorization and grant lifecycle for pre-registered public and confidential clients. It publishes RFC 8414 and RFC 9728 metadata, uses Authorization Code with mandatory PKCE S256, issues short-lived single-use codes and opaque one-hour access tokens, rotates refresh tokens with replay-family protection, and supports grant-wide RFC 7009 revocation.
+Charter publishes RFC 8414 and RFC 9728 metadata and supports Authorization Code with mandatory PKCE S256, opaque one-hour access tokens, rotating refresh tokens with replay containment, RFC 7009 revocation, RFC 7591 Dynamic Client Registration, and HTTPS Client ID Metadata Documents. Integrations can protect exact WordPress REST handlers and register narrower resources and scopes without replacing the handler's WordPress permission callback.
 
-Users receive explicit first-use and material-change consent, may reuse an exact active authorization without another prompt, and can inspect or disconnect their own grants under **Profile > Connected Apps**. Password changes, user deletion, and Multisite site-access removal close affected grants. CIMD, Dynamic Client Registration, specialized scopes, broader administration, audit, cleanup, and emergency controls remain under development.
+Users approve first use and material changes, inspect active authorizations under **Profile > Connected Apps**, and disconnect complete grants. Site and network administrators can govern clients and grants, pause issuance, lock down Bearer access, monitor bounded retention, and manage explicit signing-key replacements without exposing credential material.
 
 ## Platform requirements
 
@@ -44,6 +44,8 @@ The distributed plugin has no Composer runtime dependencies and does not ship a 
     A confidential-client secret is displayed once in a no-store response. Save it immediately: Charter persists only its password hash and cannot retrieve the original value later. Confidential clients send the secret as `client_secret` in the form-encoded token or revocation request; HTTP Basic authentication is not supported.
 
 Charter uses the canonical bare origin as both the issuer identifier and the default protected-resource identifier. HTTP issuer URLs work only in an explicit local WordPress environment or when `CHARTER_DEVELOPMENT_MODE` is `true`; non-loopback development hosts also require an exact entry in the `CHARTER_DEVELOPMENT_HOSTS` array constant.
+
+On Multisite, network-activate Charter, then prepare and enable each site under **Network Settings > Charter OAuth**. Per-site activation is unsupported and does not initialize OAuth storage.
 
 ## Protect a REST handler
 
@@ -94,9 +96,19 @@ Build, verify, activate, and run Plugin Check against the production artifact:
 npm run build:zip
 npm run artifact:verify
 npm run artifact:test
+npm run secret:check
 ```
 
 The release artifact is written to `build/charter.zip`.
+
+## Read the product guides
+
+- [Operator guide](docs/operator-guide.md): installation, upgrades, Multisite, cron, incident controls, signing keys, backups, and removal.
+- [Administrator guide](docs/administrator-guide.md): issuer enablement, client policy, grant governance, containment, and Network Admin.
+- [User guide](docs/user-guide.md): consent, current access, and disconnection.
+- [Integrator guide](docs/integrator-guide.md): discovery, clients, flows, REST protection, resources, and scopes.
+- [Privacy and retention](docs/privacy.md): stored data, outbound metadata requests, retention, and deletion.
+- [Security model](docs/security-model.md): trust boundaries, credential handling, SSRF controls, administration, and deliberate limits.
 
 ## Contribute and release
 

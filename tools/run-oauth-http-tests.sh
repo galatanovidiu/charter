@@ -4,6 +4,7 @@ set -euo pipefail
 
 charter_http_tmp="$(mktemp -d "${TMPDIR:-/tmp}/charter-oauth-http.XXXXXX")"
 charter_wp_env=(npx --no-install wp-env)
+charter_http_invalid_token="cha_$(printf 'x%.0s' {1..48})"
 
 cleanup() {
 	local exit_code=$?
@@ -412,7 +413,7 @@ charter_http_status="$(curl --silent --show-error \
 assert_status 401 "${charter_http_status}" 'authorization code replay grant closure'
 
 charter_http_status="$(curl --silent --show-error \
-	-H 'Authorization: Bearer cha_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+	-H "Authorization: Bearer ${charter_http_invalid_token}" \
 	-D "${charter_http_tmp}/invalid-bearer.headers" \
 	-o "${charter_http_tmp}/invalid-bearer.json" \
 	-w '%{http_code}' \
@@ -424,7 +425,7 @@ if grep -qi 'resource_metadata' "${charter_http_tmp}/invalid-bearer.headers"; th
 fi
 
 charter_http_status="$(curl --silent --show-error \
-	-H 'Authorization: Bearer cha_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+	-H "Authorization: Bearer ${charter_http_invalid_token}" \
 	-H 'Origin: https://client.example.test' \
 	-D "${charter_http_tmp}/public.headers" \
 	-o "${charter_http_tmp}/public.json" \

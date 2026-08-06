@@ -761,7 +761,7 @@ final class NetworkAdminPage {
 	 * @param string $name Field name.
 	 */
 	private static function postScalar( string $name ): string {
-		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Only bounded identifiers needed to derive the exact action nonce are read before verification.
+		$value = $_POST[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Returned only after explicit unslashing; the owning action validates the bounded identifier and verifies its exact nonce.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
 	}
@@ -772,7 +772,7 @@ final class NetworkAdminPage {
 	 * @param string $name Field name.
 	 */
 	private static function getScalar( string $name ): string {
-		$value = $_GET[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only site selection and pagination cannot mutate state.
+		$value = $_GET[ $name ] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Returned only after explicit unslashing for bounded read-only site selection and pagination.
 
 		return is_string( $value ) ? wp_unslash( $value ) : '';
 	}

@@ -157,14 +157,14 @@ function charter_p3_probe_direct( int $bodyLimit = 5120, string $peerIp = '198.1
 	);
 
 	if ( ! curl_setopt_array( $handle, $options ) ) {
-		curl_close( $handle );
+		unset( $handle );
 		charter_p3_probe_fail();
 	}
 
 	$ok        = curl_exec( $handle );
 	$status    = (int) curl_getinfo( $handle, CURLINFO_RESPONSE_CODE );
 	$primaryIp = (string) curl_getinfo( $handle, CURLINFO_PRIMARY_IP );
-	curl_close( $handle );
+	unset( $handle );
 
 	return array(
 		'ok'         => false !== $ok,
