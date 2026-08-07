@@ -151,10 +151,11 @@ final class AuthorizationController {
 		$scriptNonce     = bin2hex( random_bytes( 16 ) );
 		$scriptHtml      = self::consentScriptHtml( $scriptNonce );
 		$loopbackWarning = self::hasOnlyLoopbackRedirects( $request )
-			? '<p><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
+			? '<p class="charter-consent__warning"><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
 			: '';
-		$html            = sprintf(
-			'<h1>%1$s</h1><p><strong>%2$s</strong> %3$s</p><dl><dt>%4$s</dt><dd>%5$s</dd><dt>%6$s</dt><dd>%7$s</dd><dt>%8$s</dt><dd>%9$s</dd><dt>%10$s</dt><dd>%11$s</dd></dl><p>%12$s</p>%13$s<form method="post" action="%14$s" data-charter-oauth-consent>%15$s<input type="hidden" name="transaction" value="%16$s"><p><button type="submit" name="decision" value="approve" class="button button-primary">%17$s</button> <button type="submit" name="decision" value="deny" class="button">%18$s</button></p><p data-charter-oauth-status role="status" aria-live="polite" hidden>%19$s</p></form>%20$s',
+		$html            = self::consentStyleHtml() . sprintf(
+			'<div class="charter-consent"><p class="charter-consent__trust">%1$s</p><div class="charter-consent__body"><h1>%2$s</h1><p class="charter-consent__lead"><strong>%3$s</strong> %4$s</p><dl><dt>%5$s</dt><dd>%6$s</dd><dt>%7$s</dt><dd>%8$s</dd><dt>%9$s</dt><dd>%10$s</dd><dt>%11$s</dt><dd>%12$s</dd></dl><p class="charter-consent__guardrail">%13$s</p>%14$s<form method="post" action="%15$s" data-charter-oauth-consent>%16$s<input type="hidden" name="transaction" value="%17$s"><p class="charter-consent__actions"><button type="submit" name="decision" value="approve" class="button button-primary">%18$s</button><button type="submit" name="decision" value="deny" class="button">%19$s</button></p><p class="charter-consent__status" data-charter-oauth-status role="status" aria-live="polite" hidden>%20$s</p></form></div></div>%21$s',
+			esc_html__( 'Secure WordPress authorization', 'charter' ),
 			esc_html__( 'Authorize WordPress access', 'charter' ),
 			esc_html( $request->client()->name() ),
 			esc_html__( 'is requesting delegated access.', 'charter' ),
@@ -181,6 +182,52 @@ final class AuthorizationController {
 
 		$this->sendHtmlHeaders( $scriptNonce, $request->redirectUri() );
 		wp_die( $html, esc_html__( 'OAuth authorization', 'charter' ), array( 'response' => 200 ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Every dynamic value in the assembled consent HTML is escaped.
+	}
+
+	/**
+	 * Returns the standalone consent-page visual treatment.
+	 *
+	 * @return string Scoped inline style markup permitted by the response CSP.
+	 */
+	private static function consentStyleHtml(): string {
+		return <<<'HTML'
+<style>
+:root { color-scheme: light; }
+body { background: #f0f0f1 !important; }
+body #error-page { width: min(100% - 40px, 640px); max-width: none; margin: 48px auto; padding: 0; background: #fff; border: 1px solid #dcdcde; border-radius: 4px; box-shadow: 0 1px 2px rgba(0, 0, 0, .05); }
+body #error-page > p, body #error-page > .wp-die-message { margin: 0; }
+.charter-consent { color: #1e1e1e; }
+.charter-consent * { box-sizing: border-box; }
+.charter-consent__trust { display: flex; align-items: center; gap: 10px; margin: 0; padding: 16px 28px; color: #00450c; background: #edfaef; border-bottom: 1px solid #b8e6bf; font-size: 13px; font-weight: 600; }
+.charter-consent__trust::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #00a32a; box-shadow: 0 0 0 4px rgba(0, 163, 42, .12); }
+.charter-consent__body { padding: 32px; }
+.charter-consent h1 { margin: 0 0 12px; font-size: clamp(27px, 5vw, 36px); line-height: 1.15; letter-spacing: -.02em; }
+.charter-consent__lead { margin: 0 0 28px; color: #50575e; font-size: 16px; line-height: 1.55; }
+.charter-consent dl { display: grid; grid-template-columns: minmax(128px, .65fr) minmax(0, 1.35fr); margin: 0 0 24px; border: 1px solid #dcdcde; border-radius: 3px; overflow: hidden; }
+.charter-consent dt, .charter-consent dd { margin: 0; padding: 14px 16px; border-bottom: 1px solid #dcdcde; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.charter-consent dt { color: #50575e; background: #f6f7f7; font-weight: 600; }
+.charter-consent dd { color: #1e1e1e; }
+.charter-consent dt:last-of-type, .charter-consent dd:last-of-type { border-bottom: 0; }
+.charter-consent__guardrail { margin: 0 0 24px; padding: 14px 16px; color: #3c434a; background: #f6f7f7; border-left: 3px solid #3858e9; font-size: 14px; line-height: 1.55; }
+.charter-consent__warning { margin: 0 0 24px; padding: 14px 16px; color: #3c434a; background: #fcf9e8; border-left: 3px solid #dba617; font-size: 14px; line-height: 1.55; }
+.charter-consent__actions { display: flex; align-items: center; gap: 10px; margin: 0; }
+.charter-consent .button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; margin: 0; padding: 0 18px; border: 1px solid #8c8f94; border-radius: 2px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.charter-consent .button-primary { color: #fff; background: #3858e9; border-color: #3858e9; }
+.charter-consent .button-primary:hover { background: #1d35b4; border-color: #1d35b4; }
+.charter-consent .button:not(.button-primary) { color: #2c3338; background: #fff; }
+.charter-consent .button:focus-visible { outline: 2px solid #3858e9; outline-offset: 2px; }
+.charter-consent__status { margin: 16px 0 0; color: #50575e; font-size: 13px; }
+@media (max-width: 560px) {
+	body #error-page { width: min(100% - 24px, 640px); margin: 24px auto; }
+	.charter-consent__body { padding: 24px; }
+	.charter-consent dl { grid-template-columns: 1fr; }
+	.charter-consent dt, .charter-consent dd { border-bottom: 1px solid #dcdcde; }
+	.charter-consent dd:last-of-type { border-bottom: 0; }
+	.charter-consent__actions { align-items: stretch; flex-direction: column; }
+	.charter-consent .button { width: 100%; }
+}
+</style>
+HTML;
 	}
 
 	/**

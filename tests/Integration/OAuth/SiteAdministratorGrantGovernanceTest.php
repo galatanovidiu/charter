@@ -191,6 +191,8 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 		ob_start();
 		$page->render();
 		$html = (string) ob_get_clean();
+		self::assertStringContainsString( 'id="charter-site-admin-root"', $html );
+		self::assertStringContainsString( 'id="charter-site-admin-data"', $html );
 		self::assertStringContainsString( 'Site authorizations', $html );
 		self::assertStringContainsString( 'First Represented User', $html );
 		self::assertStringContainsString( 'Second Represented User', $html );
@@ -291,6 +293,8 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 		ob_start();
 		$page->render();
 		$html = (string) ob_get_clean();
+		self::assertStringContainsString( 'id="charter-connected-apps-root"', $html );
+		self::assertStringContainsString( 'id="charter-connected-apps-data"', $html );
 		self::assertStringContainsString( 'Recently disconnected', $html );
 		self::assertStringContainsString( 'A site administrator revoked this authorization.', $html );
 		self::assertStringContainsString( self::CLIENT_ONE, $html );

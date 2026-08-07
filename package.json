@@ -9,6 +9,8 @@
 	},
 	"scripts": {
 		"wp-env": "wp-env",
+		"build:admin": "webpack --mode=production",
+		"start:admin": "webpack --mode=development --watch",
 		"env:start": "wp-env start --auto-port",
 		"env:stop": "wp-env stop",
 		"env:clean": "wp-env cleanup",
@@ -42,19 +44,26 @@
 		"test:slice0:atomic:stress": "CHARTER_ATOMIC_ROUNDS=75 bash tools/run-slice0-atomic-lifecycle.sh",
 		"test:slice0:cimd-outbound-safety": "php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-unit.php --exclude-group=p3-hostile tests/Integration/CimdOutboundSafety",
 		"test:slice0:cimd-outbound-safety:ci": "bash tools/run-slice0-cimd-outbound-safety.sh",
-		"build:zip": "bash tools/build-zip.sh",
+		"build:zip": "npm run build:admin && bash tools/build-zip.sh",
 		"artifact:verify": "php tools/verify-archive.php build/charter.zip",
 		"artifact:reproducible": "bash tools/test-reproducible-artifact.sh",
 		"artifact:test": "bash tools/test-archive.sh",
 		"secret:check": "bash tools/check-secret-safety.sh",
 		"audit": "npm audit --audit-level=high",
-		"format": "prettier --no-error-on-unmatched-pattern --write \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\"",
-		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\""
+		"format": "prettier --no-error-on-unmatched-pattern --write \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\" \"webpack.config.js\"",
+		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\" \"webpack.config.js\""
 	},
 	"devDependencies": {
+		"@babel/core": "^7.28.5",
+		"@babel/preset-env": "^7.28.5",
+		"@babel/preset-react": "^7.28.5",
 		"@wordpress/env": "^11.12.0",
+		"@wordpress/dependency-extraction-webpack-plugin": "^6.52.0",
 		"@wordpress/prettier-config": "^4.52.0",
-		"prettier": "^3.9.0"
+		"babel-loader": "^10.1.1",
+		"prettier": "^3.9.0",
+		"webpack": "^5.109.2",
+		"webpack-cli": "^7.2.2"
 	},
 	"overrides": {
 		"adm-zip": "0.6.0",

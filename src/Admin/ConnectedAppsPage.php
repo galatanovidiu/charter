@@ -34,6 +34,20 @@ final class ConnectedAppsPage {
 	);
 
 	/**
+	 * Exact WordPress hook suffix for this screen.
+	 *
+	 * @var string|null
+	 */
+	private ?string $pageHook = null;
+
+	/**
+	 * Parent admin screen selected for the current user's menu.
+	 *
+	 * @var string
+	 */
+	private string $parentPage = 'profile.php';
+
+	/**
 	 * Creates the personal authorization screen.
 	 *
 	 * @since 0.1.0
@@ -56,24 +70,38 @@ final class ConnectedAppsPage {
 	 */
 	public function registerHooks(): void {
 		add_action( 'admin_menu', array( $this, 'registerPage' ) );
+		add_action( 'admin_enqueue_scripts', array( $this, 'enqueueAssets' ) );
 		add_action( 'admin_notices', array( $this, 'renderRevocationNotice' ) );
 		add_action( 'admin_post_charter_oauth_revoke_personal_grant', array( $this, 'revoke' ) );
 	}
 
 	/**
-	 * Adds Connected Apps under the current user's Profile menu.
+	 * Adds Connected Apps under Users for administrators and Profile otherwise.
 	 *
 	 * @since 0.1.0
 	 */
 	public function registerPage(): void {
-		add_submenu_page(
-			'profile.php',
+		$this->parentPage = current_user_can( 'list_users' ) ? 'users.php' : 'profile.php';
+		$pageHook         = add_submenu_page(
+			$this->parentPage,
 			esc_html__( 'Connected Apps', 'charter' ),
 			esc_html__( 'Connected Apps', 'charter' ),
 			'read',
 			'charter-connected-apps',
 			array( $this, 'render' )
 		);
+		$this->pageHook   = is_string( $pageHook ) ? $pageHook : null;
+	}
+
+	/**
+	 * Loads the component application only on the personal authorization screen.
+	 *
+	 * @param string $hookSuffix Current WordPress administration screen hook.
+	 */
+	public function enqueueAssets( string $hookSuffix ): void {
+		if ( null !== $this->pageHook && $this->pageHook === $hookSuffix ) {
+			AdminAssets::enqueue( 'connected-apps' );
+		}
 	}
 
 	/**
@@ -90,7 +118,13 @@ final class ConnectedAppsPage {
 		$history  = null === $identity
 			? array()
 			: $this->credentials->listRecentRevokedGrantsForUser( $identity->issuer(), $userId, time() - self::HISTORY_RETENTION );
+		$viewData = $this->viewData( $grants, $history );
 		?>
+		<div class="wrap charter-admin-mount">
+			<div id="charter-connected-apps-root"><p role="status"><?php esc_html_e( 'Loading connected apps…', 'charter' ); ?></p></div>
+			<?php AdminAssets::renderData( 'charter-connected-apps-data', $viewData ); ?>
+		</div>
+		<noscript>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Connected Apps', 'charter' ); ?></h1>
 			<p><?php esc_html_e( 'These applications can act through OAuth as your WordPress account. Your normal WordPress permissions still apply.', 'charter' ); ?></p>
@@ -136,7 +170,85 @@ final class ConnectedAppsPage {
 				</table>
 			<?php endif; ?>
 		</div>
+		</noscript>
 		<?php
+	}
+
+	/**
+	 * Builds the current user's secret-free application authorization model.
+	 *
+	 * @param array<GrantRecord> $grants Active grants.
+	 * @param array<GrantRecord> $history Recently revoked grants.
+	 * @return array<string, mixed>
+	 */
+	private function viewData( array $grants, array $history ): array {
+		return array(
+			'active'  => array_map(
+				function ( GrantRecord $grant ): array {
+					return array_merge(
+						$this->grantPresentation( $grant ),
+						array(
+							'action' => array(
+								'url'    => admin_url( 'admin-post.php' ),
+								'fields' => array(
+									'action'   => 'charter_oauth_revoke_personal_grant',
+									'grant_id' => (string) $grant->id(),
+									'_wpnonce' => wp_create_nonce( 'charter_oauth_revoke_personal_grant:' . $grant->id() ),
+								),
+							),
+						)
+					);
+				},
+				$grants
+			),
+			'history' => array_map(
+				function ( GrantRecord $grant ): array {
+					return array_merge(
+						$this->grantPresentation( $grant ),
+						array(
+							'disconnectedAt' => $this->formatTimestamp( $grant->revokedAt() ?? $grant->lastUsedAt() ),
+							'reason'         => $this->revocationReason( $grant->revocationReason() ),
+						)
+					);
+				},
+				$history
+			),
+		);
+	}
+
+	/**
+	 * Returns the user-facing and technical facts shared by active and historical grants.
+	 *
+	 * @param GrantRecord $grant Stored authorization grant.
+	 * @return array<string, mixed>
+	 */
+	private function grantPresentation( GrantRecord $grant ): array {
+		$name  = $this->clientName( $grant );
+		$label = $name;
+		if ( '[remote client metadata]' === $name ) {
+			$host = wp_parse_url( $grant->clientId(), PHP_URL_HOST );
+			if ( is_string( $host ) && '' !== $host ) {
+				/* translators: %s: Hostname from remote client metadata URL. */
+				$label = sprintf( __( 'Application from %s', 'charter' ), $host );
+			} else {
+				$label = __( 'Remote application', 'charter' );
+			}
+		} elseif ( '[deleted]' === $name ) {
+			$label = __( 'Disconnected application', 'charter' );
+		}
+		$scopes = preg_split( '/\s+/', trim( $grant->scope() ) );
+
+		return array(
+			'id'               => $grant->id(),
+			'application'      => $label,
+			'registeredName'   => $name,
+			'clientId'         => $grant->clientId(),
+			'resource'         => $grant->resource(),
+			'scopes'           => is_array( $scopes ) ? $scopes : array(),
+			'continuingAccess' => $grant->continuingAccess(),
+			'authorizedAt'     => $this->formatTimestamp( $grant->authorizedAt() ),
+			'lastUsedAt'       => $this->formatTimestamp( $grant->lastUsedAt() ),
+		);
 	}
 
 	/**
@@ -317,6 +429,8 @@ final class ConnectedAppsPage {
 	 * Returns the personal Connected Apps URL.
 	 */
 	private function pageUrl(): string {
-		return admin_url( 'profile.php?page=charter-connected-apps&updated=1' );
+		$parentPage = current_user_can( 'list_users' ) ? 'users.php' : 'profile.php';
+
+		return admin_url( $parentPage . '?page=charter-connected-apps&updated=1' );
 	}
 }

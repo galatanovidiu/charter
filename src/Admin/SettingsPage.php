@@ -36,6 +36,13 @@ final class SettingsPage {
 	private const KEY_AUDIT_ACTION   = 'charter_oauth_reconcile_signing_key_audit';
 
 	/**
+	 * Exact WordPress hook suffix for this screen.
+	 *
+	 * @var string|null
+	 */
+	private ?string $pageHook = null;
+
+	/**
 	 * Creates the settings screen.
 	 *
 	 * @since 0.1.0
@@ -68,6 +75,7 @@ final class SettingsPage {
 	 */
 	public function registerHooks(): void {
 		add_action( 'admin_menu', array( $this, 'registerPage' ) );
+		add_action( 'admin_enqueue_scripts', array( $this, 'enqueueAssets' ) );
 		add_action( 'admin_post_charter_oauth_enable', array( $this, 'enable' ) );
 		add_action( 'admin_post_charter_oauth_register_client', array( $this, 'registerClient' ) );
 		add_action( 'admin_post_charter_oauth_update_dcr', array( $this, 'updateDynamicRegistration' ) );
@@ -87,13 +95,25 @@ final class SettingsPage {
 	 * @since 0.1.0
 	 */
 	public function registerPage(): void {
-		add_options_page(
+		$pageHook       = add_options_page(
 			esc_html__( 'Charter OAuth', 'charter' ),
 			esc_html__( 'Charter OAuth', 'charter' ),
 			'manage_options',
 			'charter-oauth',
 			array( $this, 'render' )
 		);
+		$this->pageHook = is_string( $pageHook ) ? $pageHook : null;
+	}
+
+	/**
+	 * Loads the component application only on the Charter site screen.
+	 *
+	 * @param string $hookSuffix Current WordPress administration screen hook.
+	 */
+	public function enqueueAssets( string $hookSuffix ): void {
+		if ( null !== $this->pageHook && $this->pageHook === $hookSuffix ) {
+			AdminAssets::enqueue( 'site-admin' );
+		}
 	}
 
 	/**
@@ -124,7 +144,13 @@ final class SettingsPage {
 		$grantPages = max( 1, (int) ceil( $grantCount / 50 ) );
 		$grantPage  = min( $grantPage, $grantPages );
 		$grants     = null === $identity ? array() : $this->credentials->listActiveGrantsForIssuer( $identity->issuer(), 50, ( $grantPage - 1 ) * 50 );
+		$viewData   = $this->viewData( $identity, $clients, $events, $grantCount, $grantPage, $grantPages, $grants );
 		?>
+		<div class="wrap charter-admin-mount">
+			<div id="charter-site-admin-root"><p role="status"><?php esc_html_e( 'Loading Charter OAuth…', 'charter' ); ?></p></div>
+			<?php AdminAssets::renderData( 'charter-site-admin-data', $viewData ); ?>
+		</div>
+		<noscript>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Charter OAuth', 'charter' ); ?></h1>
 			<?php if ( 'pending' === self::getScalar( 'containment_audit' ) ) : ?>
@@ -276,7 +302,226 @@ final class SettingsPage {
 				<?php endif; ?>
 			<?php endif; ?>
 		</div>
+		</noscript>
 		<?php
+	}
+
+	/**
+	 * Builds the secret-free presentation model for the site administrator app.
+	 *
+	 * @param \GalatanOvidiu\Charter\Site\SiteIdentity|null                $identity Prepared identity.
+	 * @param array<\GalatanOvidiu\Charter\OAuth\ClientRegistrationRecord> $clients Registered clients.
+	 * @param array<\GalatanOvidiu\Charter\Security\AuditEvent>            $events Recent audit events.
+	 * @param int                                                          $grantCount Complete active grant count.
+	 * @param int                                                          $grantPage Current grant page.
+	 * @param int                                                          $grantPages Total grant pages.
+	 * @param array<GrantRecord>                                           $grants Bounded active grants.
+	 * @return array<string, mixed>
+	 */
+	private function viewData( ?\GalatanOvidiu\Charter\Site\SiteIdentity $identity, array $clients, array $events, int $grantCount, int $grantPage, int $grantPages, array $grants ): array {
+		$issuer      = null === $identity ? '' : $identity->issuer();
+		$state       = $this->siteState->state();
+		$enabled     = $this->siteState->isEnabled();
+		$containment = $enabled ? $this->containment->snapshot() : null;
+		$signingKey  = $enabled ? $this->signingKeys->snapshot() : null;
+		$urls        = null === $identity ? null : new EndpointUrls( $issuer );
+
+		$clientRows = array();
+		foreach ( $clients as $client ) {
+			$clientGrants = $this->credentials->listActiveGrantsForClient( $issuer, $client->clientId() );
+			$actions      = array();
+			if ( ClientRegistry::STATUS_ACTIVE === $client->status() ) {
+				$actions['block'] = self::postAction(
+					'charter_oauth_block_client',
+					'charter_oauth_block_client:' . hash( 'sha256', $issuer . "\0" . $client->clientId() ),
+					array( 'client_id' => $client->clientId() )
+				);
+			}
+			if ( ClientRegistry::STATUS_DELETED !== $client->status() ) {
+				$actions['delete'] = self::postAction(
+					'charter_oauth_delete_client',
+					'charter_oauth_delete_client:' . hash( 'sha256', $issuer . "\0" . $client->clientId() ),
+					array( 'client_id' => $client->clientId() )
+				);
+			}
+
+			$clientRows[] = array(
+				'id'                   => $client->clientId(),
+				'name'                 => $client->name(),
+				'status'               => $client->status(),
+				'source'               => $client->source(),
+				'authenticationMethod' => $client->authenticationMethod(),
+				'redirectUris'         => $client->redirectUris(),
+				'createdAt'            => $this->formatTimestamp( $client->createdAt() ),
+				'lastActivityAt'       => $this->formatTimestamp( $client->lastActivityAt() ),
+				'activeGrants'         => array_map(
+					function ( GrantRecord $grant ): array {
+						return array(
+							'user'  => $this->userLabel( $grant->userId() ),
+							'scope' => $grant->scope(),
+						);
+					},
+					$clientGrants
+				),
+				'actions'              => $actions,
+			);
+		}
+
+		$grantRows = array_map(
+			function ( GrantRecord $grant ) use ( $issuer ): array {
+				return array(
+					'id'               => $grant->id(),
+					'user'             => $this->userLabel( $grant->userId() ),
+					'application'      => $this->clientName( $grant ),
+					'clientId'         => $grant->clientId(),
+					'resource'         => $grant->resource(),
+					'scope'            => $grant->scope(),
+					'continuingAccess' => $grant->continuingAccess(),
+					'authorizedAt'     => $this->formatTimestamp( $grant->authorizedAt() ),
+					'lastUsedAt'       => $this->formatTimestamp( $grant->lastUsedAt() ),
+					'action'           => self::postAction(
+						'charter_oauth_revoke_site_grant',
+						'charter_oauth_revoke_site_grant:' . hash( 'sha256', $issuer . "\0" . $grant->id() ),
+						array( 'grant_id' => (string) $grant->id() )
+					),
+				);
+			},
+			$grants
+		);
+
+		$eventRows = array_map(
+			function ( \GalatanOvidiu\Charter\Security\AuditEvent $event ): array {
+				return array(
+					'time'    => $this->formatTimestamp( $event->occurredAt() ),
+					'type'    => $event->eventType(),
+					'reason'  => $event->reason(),
+					'client'  => $event->clientId(),
+					'outcome' => $event->outcome(),
+				);
+			},
+			$events
+		);
+
+		$actions = array();
+		if ( null !== $identity ) {
+			$actions['registrationPolicy'] = self::postAction(
+				'charter_oauth_update_dcr',
+				'charter_oauth_update_dcr:' . $issuer
+			);
+			$actions['registerClient']     = self::postAction(
+				'charter_oauth_register_client',
+				'charter_oauth_register_client:' . $issuer
+			);
+			$actions['revokeAll']          = self::postAction(
+				'charter_oauth_revoke_all_site_grants',
+				'charter_oauth_revoke_all_site_grants:' . hash( 'sha256', $issuer )
+			);
+			if ( SiteState::PREPARED === $state ) {
+				$actions['enable'] = self::postAction(
+					'charter_oauth_enable',
+					'charter_oauth_enable:' . $issuer,
+					array( 'issuer' => $issuer )
+				);
+			}
+		}
+
+		$modeActions = array();
+		if ( $enabled ) {
+			foreach ( array( EmergencyContainment::RESUMED, EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::LOCKDOWN ) as $mode ) {
+				$modeActions[ $mode ] = self::postAction(
+					self::CONTAINMENT_ACTION,
+					self::containmentNonceAction( $issuer, $mode ),
+					array( 'mode' => $mode )
+				);
+			}
+		}
+
+		$keyActions = array();
+		if ( is_array( $signingKey ) ) {
+			$mismatchId = $signingKey['mismatch_id'];
+			if ( is_string( $mismatchId ) && self::isBindingId( $mismatchId ) && ! $signingKey['audit_pending'] ) {
+				$keyActions['adopt'] = self::postAction(
+					self::ADOPT_KEY_ACTION,
+					self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, $issuer, $mismatchId ),
+					array( 'mismatch_id' => $mismatchId )
+				);
+			}
+			$transitionId = $signingKey['transition_id'];
+			if ( $signingKey['audit_pending'] && is_string( $transitionId ) && self::isBindingId( $transitionId ) ) {
+				$keyActions['reconcile'] = self::postAction(
+					self::KEY_AUDIT_ACTION,
+					self::signingKeyNonceAction( self::KEY_AUDIT_ACTION, $issuer, $transitionId ),
+					array( 'transition_id' => $transitionId )
+				);
+			}
+		}
+
+		$notices = array();
+		if ( 'pending' === self::getScalar( 'containment_audit' ) ) {
+			$notices[] = array(
+				'status'  => 'warning',
+				'message' => __( 'The requested OAuth emergency mode is active, but its audit event is pending reconciliation.', 'charter' ),
+			);
+		}
+		if ( 'adopted' === self::getScalar( 'signing_key' ) ) {
+			$notices[] = array(
+				'status'  => 'success',
+				'message' => __( 'The exact current signing-key replacement was adopted for this issuer.', 'charter' ),
+			);
+		} elseif ( 'reconciled' === self::getScalar( 'signing_key' ) ) {
+			$notices[] = array(
+				'status'  => 'success',
+				'message' => __( 'The pending signing-key audit event was reconciled.', 'charter' ),
+			);
+		}
+
+		return array(
+			'state'               => $state,
+			'enabled'             => $enabled,
+			'issuer'              => $issuer,
+			'urls'                => null === $urls ? null : array(
+				'authorizationServer' => $urls->authorizationServerMetadata(),
+				'protectedResource'   => $urls->protectedResourceMetadata(),
+			),
+			'dynamicRegistration' => DynamicRegistrationService::isEnabled(),
+			'clients'             => $clientRows,
+			'grants'              => $grantRows,
+			'grantCount'          => $grantCount,
+			'grantPagination'     => array(
+				'page'     => $grantPage,
+				'pages'    => $grantPages,
+				'previous' => 1 < $grantPage ? add_query_arg( 'grant_page', $grantPage - 1, admin_url( 'options-general.php?page=charter-oauth' ) ) : null,
+				'next'     => $grantPage < $grantPages ? add_query_arg( 'grant_page', $grantPage + 1, admin_url( 'options-general.php?page=charter-oauth' ) ) : null,
+			),
+			'events'              => $eventRows,
+			'containment'         => $containment,
+			'signingKey'          => $signingKey,
+			'actions'             => $actions,
+			'modeActions'         => $modeActions,
+			'keyActions'          => $keyActions,
+			'notices'             => $notices,
+		);
+	}
+
+	/**
+	 * Creates one nonce-bound form description for the component application.
+	 *
+	 * @param string                $action Fixed admin-post action.
+	 * @param string                $nonceAction Exact nonce action.
+	 * @param array<string, string> $fields Additional bound fields.
+	 * @return array{url:string,fields:array<string,string>}
+	 */
+	private static function postAction( string $action, string $nonceAction, array $fields = array() ): array {
+		return array(
+			'url'    => admin_url( 'admin-post.php' ),
+			'fields' => array_merge(
+				array(
+					'action'   => $action,
+					'_wpnonce' => wp_create_nonce( $nonceAction ),
+				),
+				$fields
+			),
+		);
 	}
 
 	/**
@@ -603,22 +848,86 @@ final class SettingsPage {
 	 * @param string $secret   Newly generated client secret.
 	 */
 	private function renderClientSecret( string $clientId, string $secret ): never {
+		$nonce = bin2hex( random_bytes( 16 ) );
+
 		status_header( 200 );
 		nocache_headers();
 		header( 'Referrer-Policy: no-referrer' );
-		header( "Content-Security-Policy: default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" );
+		header( "Content-Security-Policy: default-src 'none'; style-src 'nonce-" . $nonce . "'; script-src 'nonce-" . $nonce . "'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" );
 		?>
 		<!doctype html>
 		<html <?php language_attributes(); ?>>
-		<head><meta charset="<?php bloginfo( 'charset' ); ?>"><meta name="viewport" content="width=device-width, initial-scale=1"><title><?php esc_html_e( 'Client registered', 'charter' ); ?></title></head>
+		<head>
+			<meta charset="<?php bloginfo( 'charset' ); ?>">
+			<meta name="viewport" content="width=device-width, initial-scale=1">
+			<title><?php esc_html_e( 'Client registered', 'charter' ); ?></title>
+			<style nonce="<?php echo esc_attr( $nonce ); ?>">
+				:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1e1e1e; background: #f0f0f1; }
+				* { box-sizing: border-box; }
+				body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 32px 20px; }
+				main { width: min(100%, 620px); background: #fff; border: 1px solid #dcdcde; border-radius: 4px; box-shadow: 0 1px 2px rgba(0, 0, 0, .05); overflow: hidden; }
+				.charter-secret__status { display: flex; align-items: center; gap: 10px; margin: 0; padding: 16px 24px; color: #00450c; background: #edfaef; border-bottom: 1px solid #b8e6bf; font-size: 13px; font-weight: 600; }
+				.charter-secret__status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #00a32a; box-shadow: 0 0 0 4px rgba(0, 163, 42, .12); }
+				.charter-secret__content { padding: 32px; }
+				h1 { max-width: 480px; margin: 0 0 12px; font-size: clamp(26px, 5vw, 34px); line-height: 1.15; letter-spacing: -.02em; }
+				p { margin: 0 0 16px; color: #50575e; font-size: 15px; line-height: 1.6; }
+				.charter-secret__warning { padding-left: 14px; border-left: 3px solid #dba617; color: #3c434a; }
+				.charter-secret__field { display: flex; align-items: stretch; gap: 8px; margin: 24px 0 12px; }
+				code { min-width: 0; flex: 1; padding: 14px 16px; overflow-wrap: anywhere; color: #1e1e1e; background: #f6f7f7; border: 1px solid #8c8f94; border-radius: 3px; font: 600 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: all; }
+				button, a { min-height: 40px; border-radius: 2px; font: 600 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+				button { padding: 0 16px; color: #fff; background: #3858e9; border: 1px solid #3858e9; cursor: pointer; }
+				button:hover { background: #1d35b4; border-color: #1d35b4; }
+				button:focus-visible, a:focus-visible { outline: 2px solid #3858e9; outline-offset: 2px; }
+				.charter-secret__feedback { min-height: 20px; margin-bottom: 24px; color: #008a20; font-size: 13px; }
+				a { display: inline-flex; align-items: center; color: #3858e9; text-decoration: none; }
+				a:hover { text-decoration: underline; }
+				@media (max-width: 480px) { .charter-secret__content { padding: 24px; } .charter-secret__field { flex-direction: column; } }
+			</style>
+		</head>
 		<body>
-			<main>
-				<h1><?php esc_html_e( 'Save this client secret now', 'charter' ); ?></h1>
-				<p><?php /* translators: %s: Client identifier. */ echo esc_html( sprintf( __( 'Confidential client %s was registered.', 'charter' ), $clientId ) ); ?></p>
-				<p><?php esc_html_e( 'This secret cannot be retrieved after you leave this page.', 'charter' ); ?></p>
-				<p><code><?php echo esc_html( $secret ); ?></code></p>
-				<p><a href="<?php echo esc_url( $this->settingsUrl() ); ?>"><?php esc_html_e( 'Return to Charter OAuth settings', 'charter' ); ?></a></p>
+			<main class="charter-secret">
+				<p class="charter-secret__status"><?php esc_html_e( 'Confidential client registered', 'charter' ); ?></p>
+				<div class="charter-secret__content">
+					<h1><?php esc_html_e( 'Save this client secret now', 'charter' ); ?></h1>
+					<p><?php /* translators: %s: Client identifier. */ echo esc_html( sprintf( __( 'Confidential client %s was registered.', 'charter' ), $clientId ) ); ?></p>
+					<p class="charter-secret__warning"><?php esc_html_e( 'This secret cannot be retrieved after you leave this page.', 'charter' ); ?></p>
+					<div class="charter-secret__field">
+						<code id="charter-client-secret"><?php echo esc_html( $secret ); ?></code>
+						<button type="button" data-charter-copy-secret><?php esc_html_e( 'Copy secret', 'charter' ); ?></button>
+					</div>
+					<p class="charter-secret__feedback" data-charter-copy-status role="status" aria-live="polite"></p>
+					<a href="<?php echo esc_url( $this->settingsUrl() ); ?>"><?php esc_html_e( 'Return to Charter OAuth settings', 'charter' ); ?></a>
+				</div>
 			</main>
+			<script nonce="<?php echo esc_attr( $nonce ); ?>">
+				(function () {
+					var button = document.querySelector('[data-charter-copy-secret]');
+					var secret = document.getElementById('charter-client-secret');
+					var status = document.querySelector('[data-charter-copy-status]');
+					button.addEventListener('click', function () {
+						var text = secret.textContent;
+						var copied = function () { status.textContent = <?php echo wp_json_encode( __( 'Secret copied to the clipboard.', 'charter' ) ); ?>; };
+						var fallbackCopy = function () {
+							var selection = window.getSelection();
+							if (!selection) {
+								return;
+							}
+							var range = document.createRange();
+							range.selectNodeContents(secret);
+							selection.removeAllRanges();
+							selection.addRange(range);
+							document.execCommand('copy');
+							selection.removeAllRanges();
+							copied();
+						};
+						if (navigator.clipboard && window.isSecureContext) {
+							navigator.clipboard.writeText(text).then(copied, fallbackCopy);
+							return;
+						}
+						fallbackCopy();
+					});
+				}());
+			</script>
 		</body>
 		</html>
 		<?php

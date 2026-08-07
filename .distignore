@@ -7,6 +7,7 @@
 /.github
 /.wordpress-org
 /build
+/assets/src
 /docs
 /node_modules
 /tests
@@ -39,3 +40,4 @@
 /phpstan-bootstrap.php
 /phpstan.neon.dist
 /phpunit.xml.dist
+/webpack.config.js

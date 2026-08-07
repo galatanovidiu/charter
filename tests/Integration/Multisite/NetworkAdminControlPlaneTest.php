@@ -233,6 +233,8 @@ final class NetworkAdminControlPlaneTest extends WP_UnitTestCase {
 		$page->render();
 		$html        = (string) ob_get_clean();
 		$nonceAction = self::nonceAction( 'charter_oauth_network_prepare_site', (string) $siteId );
+		self::assertStringContainsString( 'id="charter-network-admin-root"', $html );
+		self::assertStringContainsString( 'id="charter-network-admin-data"', $html );
 		self::assertStringContainsString( 'Charter OAuth network control', $html );
 		self::assertStringContainsString( 'OAuth state: Available', $html );
 		self::assertStringContainsString( 'network/edit.php?action=charter_oauth_network_prepare_site', $html );

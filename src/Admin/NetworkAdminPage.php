@@ -34,6 +34,20 @@ final class NetworkAdminPage {
 	private const GRANTS_PER_PAGE    = 50;
 
 	/**
+	 * Exact WordPress hook suffix for this screen.
+	 *
+	 * @var string|null
+	 */
+	private ?string $pageHook = null;
+
+	/**
+	 * Cached bounded signing-key batch summary.
+	 *
+	 * @var array{batch_id:string,actionable:int}|null
+	 */
+	private ?array $signingKeyBatch = null;
+
+	/**
 	 * Creates the Network Admin screen.
 	 *
 	 * @param NetworkSiteControl $sites Isolated selected-site operations.
@@ -44,6 +58,7 @@ final class NetworkAdminPage {
 	/** Registers Network Admin presentation and mutation hooks. */
 	public function registerHooks(): void {
 		add_action( 'network_admin_menu', array( $this, 'registerPage' ) );
+		add_action( 'admin_enqueue_scripts', array( $this, 'enqueueAssets' ) );
 		add_action( 'network_admin_edit_' . self::PREPARE_ACTION, array( $this, 'prepareSite' ) );
 		add_action( 'network_admin_edit_' . self::ENABLE_ACTION, array( $this, 'enableSite' ) );
 		add_action( 'network_admin_edit_' . self::REVOKE_ACTION, array( $this, 'revokeGrant' ) );
@@ -59,7 +74,7 @@ final class NetworkAdminPage {
 			return;
 		}
 
-		add_submenu_page(
+		$pageHook       = add_submenu_page(
 			'settings.php',
 			esc_html__( 'Charter OAuth', 'charter' ),
 			esc_html__( 'Charter OAuth', 'charter' ),
@@ -67,6 +82,18 @@ final class NetworkAdminPage {
 			self::PAGE_SLUG,
 			array( $this, 'render' )
 		);
+		$this->pageHook = is_string( $pageHook ) ? $pageHook : null;
+	}
+
+	/**
+	 * Loads the component application only on the Network Admin Charter screen.
+	 *
+	 * @param string $hookSuffix Current WordPress administration screen hook.
+	 */
+	public function enqueueAssets( string $hookSuffix ): void {
+		if ( null !== $this->pageHook && $this->pageHook === $hookSuffix ) {
+			AdminAssets::enqueue( 'network-admin' );
+		}
 	}
 
 	/** Renders the bounded site selector and one selected site's exact state. */
@@ -89,7 +116,13 @@ final class NetworkAdminPage {
 				$snapshot  = $this->sites->inspect( $siteId, self::GRANTS_PER_PAGE, ( $grantPage - 1 ) * self::GRANTS_PER_PAGE );
 			}
 		}
+		$viewData = $this->viewData( $siteList, $sitesPage, $sitePages, $siteId, $grantPage, $snapshot );
 		?>
+		<div class="wrap charter-admin-mount">
+			<div id="charter-network-admin-root"><p role="status"><?php esc_html_e( 'Loading Charter network controls…', 'charter' ); ?></p></div>
+			<?php AdminAssets::renderData( 'charter-network-admin-data', $viewData ); ?>
+		</div>
+		<noscript>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Charter OAuth network control', 'charter' ); ?></h1>
 			<p><?php esc_html_e( 'Select one site to inspect or govern its own OAuth issuer. This screen does not create network clients, grants, credentials, or an OAuth issuer for the network.', 'charter' ); ?></p>
@@ -122,7 +155,262 @@ final class NetworkAdminPage {
 				<?php $this->renderSite( $snapshot, $grantPage ); ?>
 			<?php endif; ?>
 		</div>
+		</noscript>
 		<?php
+	}
+
+	/**
+	 * Builds the bounded, secret-free Network Admin presentation model.
+	 *
+	 * @param array<WP_Site>           $siteList Current site page.
+	 * @param int                      $sitesPage Current site page number.
+	 * @param int                      $sitePages Total site pages.
+	 * @param int                      $siteId Selected site identifier.
+	 * @param int                      $grantPage Current selected-site grant page.
+	 * @param NetworkSiteSnapshot|null $snapshot Selected-site projection.
+	 * @return array<string, mixed>
+	 */
+	private function viewData( array $siteList, int $sitesPage, int $sitePages, int $siteId, int $grantPage, ?NetworkSiteSnapshot $snapshot ): array {
+		$sites = array_map(
+			function ( WP_Site $site ) use ( $siteId ): array {
+				$id = (int) $site->blog_id;
+
+				return array(
+					'id'         => $id,
+					'domainPath' => $site->domain . $site->path,
+					'url'        => $this->settingsUrl( $id ),
+					'selected'   => $id === $siteId,
+				);
+			},
+			$siteList
+		);
+
+		$modeActions = array();
+		foreach ( array( EmergencyContainment::RESUMED, EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::LOCKDOWN ) as $mode ) {
+			$modeActions[ $mode ] = $this->networkPostAction(
+				self::CONTAINMENT_ACTION,
+				self::containmentNonceAction( 'all', $mode, 0, '' ),
+				array(
+					'scope'   => 'all',
+					'site_id' => '0',
+					'issuer'  => '',
+					'mode'    => $mode,
+				)
+			);
+		}
+
+		$batch        = $this->signingKeyBatch();
+		$allKeyAction = 0 < $batch['actionable']
+			? $this->networkPostAction(
+				self::ADOPT_KEY_ACTION,
+				self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, 'all', 0, '', $batch['batch_id'] ),
+				array(
+					'scope'      => 'all',
+					'site_id'    => '0',
+					'issuer'     => '',
+					'binding_id' => $batch['batch_id'],
+				)
+			)
+			: null;
+
+		return array(
+			'notice'         => $this->updatedNoticeData(),
+			'sites'          => $sites,
+			'sitePagination' => array(
+				'page'     => $sitesPage,
+				'pages'    => $sitePages,
+				'previous' => 1 < $sitesPage ? $this->settingsUrl( 0, array( 'sites_page' => $sitesPage - 1 ) ) : null,
+				'next'     => $sitesPage < $sitePages ? $this->settingsUrl( 0, array( 'sites_page' => $sitesPage + 1 ) ) : null,
+			),
+			'networkActions' => array(
+				'modes'            => $modeActions,
+				'signingKeyCount'  => $batch['actionable'],
+				'signingKeyAction' => $allKeyAction,
+			),
+			'selected'       => null === $snapshot ? null : $this->selectedSiteData( $snapshot, $grantPage ),
+			'invalidSite'    => 0 < $siteId && null === $snapshot,
+		);
+	}
+
+	/**
+	 * Builds one exact selected-site presentation model.
+	 *
+	 * @param NetworkSiteSnapshot $snapshot Exact selected-site snapshot.
+	 * @param int                 $grantPage Bounded active-grant page.
+	 * @return array<string, mixed>
+	 */
+	private function selectedSiteData( NetworkSiteSnapshot $snapshot, int $grantPage ): array {
+		$identity   = $snapshot->identity();
+		$issuer     = null === $identity ? '' : $identity->issuer();
+		$grantPages = max( 1, (int) ceil( $snapshot->activeGrantCount() / self::GRANTS_PER_PAGE ) );
+		$actions    = array();
+
+		if ( null === $identity && SiteState::AVAILABLE === $snapshot->state() ) {
+			$actions['prepare'] = $this->networkPostAction(
+				self::PREPARE_ACTION,
+				self::nonceAction( self::PREPARE_ACTION, (string) $snapshot->siteId() ),
+				array( 'site_id' => (string) $snapshot->siteId() )
+			);
+		}
+		if ( null !== $identity && SiteState::PREPARED === $snapshot->state() ) {
+			$actions['enable'] = $this->networkPostAction(
+				self::ENABLE_ACTION,
+				self::nonceAction( self::ENABLE_ACTION, (string) $snapshot->siteId(), $issuer ),
+				array(
+					'site_id' => (string) $snapshot->siteId(),
+					'issuer'  => $issuer,
+				)
+			);
+		}
+
+		$modeActions = array();
+		if ( null !== $identity && SiteState::ENABLED === $snapshot->state() ) {
+			foreach ( array( EmergencyContainment::RESUMED, EmergencyContainment::ISSUANCE_PAUSED, EmergencyContainment::LOCKDOWN ) as $mode ) {
+				$modeActions[ $mode ] = $this->networkPostAction(
+					self::CONTAINMENT_ACTION,
+					self::containmentNonceAction( 'site', $mode, $snapshot->siteId(), $issuer ),
+					array(
+						'scope'   => 'site',
+						'site_id' => (string) $snapshot->siteId(),
+						'issuer'  => $issuer,
+						'mode'    => $mode,
+					)
+				);
+			}
+		}
+
+		$keyActions   = array();
+		$mismatchId   = $snapshot->signingKeyMismatchId();
+		$transitionId = $snapshot->signingKeyTransitionId();
+		if ( null !== $identity && $snapshot->signingKeyAuditPending() && is_string( $transitionId ) ) {
+			$keyActions['reconcile'] = $this->networkPostAction(
+				self::KEY_AUDIT_ACTION,
+				self::signingKeyNonceAction( self::KEY_AUDIT_ACTION, 'site', $snapshot->siteId(), $issuer, $transitionId ),
+				array(
+					'site_id'    => (string) $snapshot->siteId(),
+					'issuer'     => $issuer,
+					'binding_id' => $transitionId,
+				)
+			);
+		} elseif ( null !== $identity && is_string( $mismatchId ) ) {
+			$keyActions['adopt'] = $this->networkPostAction(
+				self::ADOPT_KEY_ACTION,
+				self::signingKeyNonceAction( self::ADOPT_KEY_ACTION, 'site', $snapshot->siteId(), $issuer, $mismatchId ),
+				array(
+					'scope'      => 'site',
+					'site_id'    => (string) $snapshot->siteId(),
+					'issuer'     => $issuer,
+					'binding_id' => $mismatchId,
+				)
+			);
+		}
+
+		$grants = array_map(
+			function ( GrantRecord $grant ) use ( $snapshot, $issuer ): array {
+				return array(
+					'id'               => $grant->id(),
+					/* translators: %d: WordPress user ID. */
+					'user'             => sprintf( __( 'User #%d', 'charter' ), $grant->userId() ),
+					'clientId'         => $grant->clientId(),
+					'resource'         => $grant->resource(),
+					'scope'            => $grant->scope(),
+					'continuingAccess' => $grant->continuingAccess(),
+					'action'           => $this->networkPostAction(
+						self::REVOKE_ACTION,
+						self::nonceAction( self::REVOKE_ACTION, (string) $snapshot->siteId(), $issuer, (string) $grant->id() ),
+						array(
+							'site_id'  => (string) $snapshot->siteId(),
+							'issuer'   => $issuer,
+							'grant_id' => (string) $grant->id(),
+						)
+					),
+				);
+			},
+			$snapshot->activeGrants()
+		);
+
+		if ( null !== $identity && 0 < $snapshot->activeGrantCount() ) {
+			$actions['revokeAll'] = $this->networkPostAction(
+				self::REVOKE_ALL_ACTION,
+				self::nonceAction( self::REVOKE_ALL_ACTION, (string) $snapshot->siteId(), $issuer ),
+				array(
+					'site_id' => (string) $snapshot->siteId(),
+					'issuer'  => $issuer,
+				)
+			);
+		}
+
+		return array(
+			'id'              => $snapshot->siteId(),
+			'state'           => $snapshot->state(),
+			'issuer'          => $issuer,
+			'storageReady'    => $snapshot->storageReady(),
+			'grantCount'      => $snapshot->activeGrantCount(),
+			'grants'          => $grants,
+			'events'          => array_map(
+				function ( \GalatanOvidiu\Charter\Security\AuditEvent $event ): array {
+					return array(
+						'time'    => $this->formatTimestamp( $event->occurredAt() ),
+						'type'    => $event->eventType(),
+						'reason'  => $event->reason(),
+						'client'  => $event->clientId(),
+						'user'    => $event->representedUserId(),
+						'outcome' => $event->outcome(),
+					);
+				},
+				$snapshot->events()
+			),
+			'containment'     => array(
+				'mode'         => $snapshot->containmentMode(),
+				'actor'        => $snapshot->containmentActor(),
+				'auditPending' => $snapshot->containmentAuditPending(),
+			),
+			'signingKey'      => array(
+				'source'           => $snapshot->signingKeySource(),
+				'status'           => $snapshot->signingKeyStatus(),
+				'databaseFallback' => $snapshot->signingKeyUsesDatabaseFallback(),
+				'generation'       => $snapshot->signingKeyGeneration(),
+				'adoptionCount'    => $snapshot->signingKeyAdoptionCount(),
+				'auditPending'     => $snapshot->signingKeyAuditPending(),
+			),
+			'actions'         => $actions,
+			'modeActions'     => $modeActions,
+			'keyActions'      => $keyActions,
+			'grantPagination' => array(
+				'page'     => $grantPage,
+				'pages'    => $grantPages,
+				'previous' => 1 < $grantPage ? $this->settingsUrl( $snapshot->siteId(), array( 'grant_page' => $grantPage - 1 ) ) : null,
+				'next'     => $grantPage < $grantPages ? $this->settingsUrl( $snapshot->siteId(), array( 'grant_page' => $grantPage + 1 ) ) : null,
+			),
+		);
+	}
+
+	/**
+	 * Returns the bounded signing-key batch once per request.
+	 *
+	 * @return array{batch_id:string,actionable:int}
+	 */
+	private function signingKeyBatch(): array {
+		if ( null === $this->signingKeyBatch ) {
+			$this->signingKeyBatch = $this->sites->signingKeyBatch();
+		}
+
+		return $this->signingKeyBatch;
+	}
+
+	/**
+	 * Creates a nonce-bound Network Admin form description.
+	 *
+	 * @param string                $action Fixed network action.
+	 * @param string                $nonceAction Exact nonce action.
+	 * @param array<string, string> $fields Bound fields.
+	 * @return array{url:string,fields:array<string,string>}
+	 */
+	private function networkPostAction( string $action, string $nonceAction, array $fields ): array {
+		return array(
+			'url'    => $this->actionUrl( $action ),
+			'fields' => array_merge( array( '_wpnonce' => wp_create_nonce( $nonceAction ) ), $fields ),
+		);
 	}
 
 	/** Applies an explicitly confirmed site-scoped preparation. */
@@ -364,7 +652,7 @@ final class NetworkAdminPage {
 
 	/** Renders one exact network snapshot-bound signing-key adoption batch. */
 	private function renderAllSigningKeyControls(): void {
-		$batch = $this->sites->signingKeyBatch();
+		$batch = $this->signingKeyBatch();
 		?>
 		<h2><?php esc_html_e( 'Network signing-key lifecycle', 'charter' ); ?></h2>
 		<p><?php esc_html_e( 'Each adoption or audit reconciliation runs sequentially inside one enabled site issuer and restores the original site after every transition. WordPress-derived sites never require adoption.', 'charter' ); ?></p>
@@ -636,6 +924,22 @@ final class NetworkAdminPage {
 
 	/** Renders a whitelisted post-action result notice. */
 	private function renderUpdatedNotice(): void {
+		$notice = $this->updatedNoticeData();
+		if ( null === $notice ) {
+			return;
+		}
+		$noticeClass = 'warning' === $notice['status'] ? 'notice-warning' : 'notice-success';
+		?>
+		<div class="notice <?php echo esc_attr( $noticeClass ); ?> is-dismissible"><p><?php echo esc_html( $notice['message'] ); ?></p></div>
+		<?php
+	}
+
+	/**
+	 * Returns one whitelisted post-action result for both renderers.
+	 *
+	 * @return array{status:string,message:string}|null
+	 */
+	private function updatedNoticeData(): ?array {
 		$updated = self::getScalar( 'updated' );
 		$message = match ( $updated ) {
 			'prepared'     => __( 'The selected site was prepared inside its own OAuth boundary.', 'charter' ),
@@ -665,15 +969,17 @@ final class NetworkAdminPage {
 			),
 			default         => '',
 		};
-		if ( '' !== $message ) {
-			$noticeClass = in_array( $updated, array( 'containment_pending', 'containment_all', 'signing_key_all' ), true )
-				&& ( 'containment_pending' === $updated || 0 < absint( self::getScalar( 'pending' ) ) || 0 < absint( self::getScalar( 'failed' ) ) )
-				? 'notice-warning'
-				: 'notice-success';
-			?>
-			<div class="notice <?php echo esc_attr( $noticeClass ); ?> is-dismissible"><p><?php echo esc_html( $message ); ?></p></div>
-			<?php
+		if ( '' === $message ) {
+			return null;
 		}
+
+		$warning = in_array( $updated, array( 'containment_pending', 'containment_all', 'signing_key_all' ), true )
+			&& ( 'containment_pending' === $updated || 0 < absint( self::getScalar( 'pending' ) ) || 0 < absint( self::getScalar( 'failed' ) ) );
+
+		return array(
+			'status'  => $warning ? 'warning' : 'success',
+			'message' => $message,
+		);
 	}
 
 	/**
