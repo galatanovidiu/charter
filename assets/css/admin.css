@@ -31,11 +31,7 @@
 	box-sizing: border-box;
 }
 
-.charter-admin-app h1,
-.charter-admin-app h2,
-.charter-admin-app h3,
-.charter-admin-app h4,
-.charter-admin-app p {
+.charter-admin-app :where( h1, h2, h3, h4, p ) {
 	margin-top: 0;
 }
 
@@ -292,6 +288,19 @@
 	padding: 0;
 }
 
+.charter-card-body--flush > .charter-empty-state {
+	padding: 40px 20px;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+}
+
+.charter-card-body--flush > .charter-pagination {
+	margin-top: 0;
+	padding: 16px 20px;
+	border-top: 1px solid #e8e8e8;
+}
+
 .charter-card-title {
 	display: flex;
 	align-items: center;
@@ -535,8 +544,21 @@
 	margin-bottom: 0;
 }
 
+.charter-control-form {
+	display: grid;
+	gap: 16px;
+}
+
+.charter-control-form .components-base-control {
+	margin-bottom: 0;
+}
+
+.charter-control-form .components-button {
+	justify-self: start;
+}
+
 .charter-callout-copy {
-	margin: 4px 0 16px;
+	margin: 16px 0;
 	padding: 10px 12px;
 	border-left: 3px solid var( --charter-action );
 	background: #f6f7f7;

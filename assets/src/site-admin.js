@@ -4,7 +4,6 @@ import {
 	CardBody,
 	CardHeader,
 	CheckboxControl,
-	ClipboardButton,
 	ExternalLink,
 	Modal,
 	Notice,
@@ -15,6 +14,7 @@ import {
 	TextControl,
 	ToggleControl,
 } from '@wordpress/components';
+import { useCopyToClipboard } from '@wordpress/compose';
 import { createRoot, useMemo, useState } from '@wordpress/element';
 import { __, _n, sprintf } from '@wordpress/i18n';
 import {
@@ -205,6 +205,8 @@ function Section({ name }) {
 }
 
 function Overview() {
+	const copyIssuerRef = useCopyToClipboard(data.issuer || '');
+
 	return (
 		<div className="charter-section-grid">
 			<Card className="charter-card charter-card--wide">
@@ -225,12 +227,9 @@ function Overview() {
 						<>
 							<div className="charter-copy-row">
 								<code>{data.issuer}</code>
-								<ClipboardButton
-									variant="secondary"
-									text={data.issuer}
-								>
+								<Button ref={copyIssuerRef} variant="secondary">
 									{__('Copy issuer', 'charter')}
-								</ClipboardButton>
+								</Button>
 							</div>
 							<p className="charter-muted">
 								{__(
@@ -352,6 +351,7 @@ function RegistrationPolicy() {
 				<PostForm
 					action={data.actions.registrationPolicy}
 					extraFields={enabled ? { dcr_enabled: '1' } : {}}
+					className="charter-control-form"
 				>
 					<ToggleControl
 						label={__(
@@ -421,6 +421,7 @@ function Applications() {
 					label={__('Status', 'charter')}
 					value={status}
 					onChange={setStatus}
+					__next40pxDefaultSize
 					options={[
 						{
 							label: __('Current applications', 'charter'),
@@ -568,12 +569,14 @@ function RegistrationModal({ onClose }) {
 						label={__('Application name', 'charter')}
 						value={clientName}
 						onChange={setClientName}
+						__next40pxDefaultSize
 						required
 					/>
 					<TextControl
 						label={__('Client ID', 'charter')}
 						value={clientId}
 						onChange={setClientId}
+						__next40pxDefaultSize
 						required
 						help={__(
 							'Use the identifier the application will send during authorization.',
@@ -585,12 +588,14 @@ function RegistrationModal({ onClose }) {
 						type="url"
 						value={redirectUri}
 						onChange={setRedirectUri}
+						__next40pxDefaultSize
 						required
 					/>
 					<SelectControl
 						label={__('Application type', 'charter')}
 						value={clientType}
 						onChange={setClientType}
+						__next40pxDefaultSize
 						options={[
 							{
 								label: __('Public — no secret', 'charter'),

@@ -681,7 +681,9 @@ function NetworkActions() {
 									},
 								]}
 							/>
-							<p>{descriptions[mode]}</p>
+							<p className="charter-callout-copy">
+								{descriptions[mode]}
+							</p>
 							<ConfirmAction
 								action={data.networkActions.modes[mode]}
 								label={__('Apply across network', 'charter')}
