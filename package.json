@@ -54,16 +54,16 @@
 		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\" \"webpack.config.js\""
 	},
 	"devDependencies": {
-		"@babel/core": "^7.28.5",
-		"@babel/preset-env": "^7.28.5",
-		"@babel/preset-react": "^7.28.5",
-		"@wordpress/env": "^11.12.0",
-		"@wordpress/dependency-extraction-webpack-plugin": "^6.52.0",
-		"@wordpress/prettier-config": "^4.52.0",
+		"@babel/core": "^8.0.6",
+		"@babel/preset-env": "^8.0.6",
+		"@babel/preset-react": "^8.0.1",
+		"@wordpress/env": "^11.16.0",
+		"@wordpress/dependency-extraction-webpack-plugin": "^6.56.0",
+		"@wordpress/prettier-config": "^4.56.0",
 		"babel-loader": "^10.1.1",
-		"prettier": "^3.9.0",
-		"webpack": "^5.109.2",
-		"webpack-cli": "^7.2.2"
+		"prettier": "^3.9.9",
+		"webpack": "^5.111.1",
+		"webpack-cli": "^7.2.3"
 	},
 	"overrides": {
 		"adm-zip": "0.6.0",
