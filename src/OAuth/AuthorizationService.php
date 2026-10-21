@@ -61,45 +61,95 @@ final class AuthorizationService {
 	 * @throws ProtocolException When the request is invalid or the issuer is unavailable.
 	 */
 	public function validate( array $parameters ): AuthorizationRequest {
-		// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exact validated redirect and state values are protocol data; escaping would corrupt their OAuth bindings.
-		$identity = $this->siteState->identity();
-		if ( ! $this->siteState->isEnabled() || ! $this->siteState->requestMatchesIdentity() || null === $identity ) {
-			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
-		}
-		if ( ! $this->containment->issuanceAllowed() ) {
-			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
-		}
-		if ( ! $this->signingKeys->credentialOperationsAllowed() ) {
-			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
-		}
-
-		$issuer      = $identity->issuer();
-		$clientId    = self::requiredParameter( $parameters, 'client_id', 2048 );
-		$redirectUri = self::requiredParameter( $parameters, 'redirect_uri', 2048 );
-		$state       = self::optionalParameter( $parameters, 'state', 2048 );
-		$this->enforceAuthorizationLimit( $issuer, $clientId, null, time() );
+		$validated = $this->validateLocalParameters( $parameters );
+		$this->consumeAuthorizationLimit(
+			$validated['rate_policy'],
+			$validated['issuer'],
+			'authorization_issuer',
+			'issuer',
+			$validated['client_id'],
+			null,
+			$validated['timestamp']
+		);
 		try {
-			$client = $this->clientMetadata->resolveForAuthorization( $issuer, $clientId, time() );
+			$client = $this->clientMetadata->resolveForAuthorization( $validated['issuer'], $validated['client_id'], time() );
 		} catch ( ClientMetadataResolutionException ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'The client metadata could not be validated.', 503 );
 		}
 
-		if ( null === $client || ! $client->allowsRedirectUri( $redirectUri ) ) {
+		if ( null === $client || ! $client->allowsRedirectUri( $validated['redirect_uri'] ) ) {
 			throw new ProtocolException( 'invalid_request', 'The client or redirect URI is invalid.' );
 		}
 
-		if ( 'code' !== self::requiredParameter( $parameters, 'response_type', 32 ) ) {
-			throw new ProtocolException( 'unsupported_response_type', 'Only the code response type is supported.', 400, $redirectUri, $state );
+		$continuingAccess = $validated['offline_access']
+			|| $client->supportsGrantType( Client::GRANT_REFRESH_TOKEN );
+
+		return new AuthorizationRequest(
+			$validated['issuer'],
+			$validated['resource'],
+			$client,
+			$validated['redirect_uri'],
+			$validated['scope'],
+			$validated['challenge'],
+			$validated['state'],
+			$continuingAccess,
+			$validated['policy']->consentScopes( $validated['scope'] )
+		);
+	}
+
+	/**
+	 * Validates issuer state and request syntax without resolving client metadata.
+	 *
+	 * This is the complete logged-out boundary: successful preflight may continue
+	 * to WordPress authentication, while client discovery waits until a user is
+	 * authenticated.
+	 *
+	 * @param array<string, mixed> $parameters Request parameters.
+	 * @throws ProtocolException When the request is invalid or the issuer is unavailable.
+	 */
+	public function preflight( array $parameters ): void {
+		$this->validateLocalParameters( $parameters );
+	}
+
+	/**
+	 * Validates every request fact that does not require remote client metadata.
+	 *
+	 * @param array<string, mixed> $parameters Request parameters.
+	 * @return array{issuer:string,client_id:string,redirect_uri:string,state:?string,resource:string,scope:string,challenge:string,offline_access:bool,policy:AccessPolicy,rate_policy:array<mixed,mixed>,timestamp:int}
+	 * @throws ProtocolException When the request is invalid or the issuer is unavailable.
+	 */
+	private function validateLocalParameters( array $parameters ): array {
+		// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exact prevalidated redirect and state values are protocol data; escaping would corrupt their OAuth bindings.
+		$identity = $this->siteState->identity();
+		if ( ! $this->siteState->isEnabled() || ! $this->siteState->requestMatchesIdentity() || null === $identity ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
+		}
+		if ( ! $this->containment->issuanceAllowed() || ! $this->signingKeys->credentialOperationsAllowed() ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
 
-		$method = self::requiredParameter( $parameters, 'code_challenge_method', 16 );
-		if ( 'S256' !== $method ) {
-			throw new ProtocolException( 'invalid_request', 'PKCE with S256 is required.', 400, $redirectUri, $state );
+		$issuer        = $identity->issuer();
+		$clientId      = self::requiredParameter( $parameters, 'client_id', 2048 );
+		$redirectUri   = self::requiredParameter( $parameters, 'redirect_uri', 2048 );
+		$state         = self::optionalParameter( $parameters, 'state', 2048 );
+		$errorRedirect = $this->trustedErrorRedirect( $issuer, $clientId, $redirectUri );
+		$localClient   = $this->clients->findActive( $issuer, $clientId );
+		if ( null !== $localClient && ClientRegistry::SOURCE_CIMD !== $localClient->source() && ! $localClient->allowsRedirectUri( $redirectUri ) ) {
+			throw new ProtocolException( 'invalid_request', 'The client or redirect URI is invalid.' );
+		}
+		$timestamp  = time();
+		$ratePolicy = $this->enforceAuthorizationLimit( $issuer, $clientId, null, $timestamp );
+
+		if ( 'code' !== self::requiredParameter( $parameters, 'response_type', 32 ) ) {
+			throw new ProtocolException( 'unsupported_response_type', 'Only the code response type is supported.', 400, $errorRedirect, $state );
+		}
+		if ( 'S256' !== self::requiredParameter( $parameters, 'code_challenge_method', 16 ) ) {
+			throw new ProtocolException( 'invalid_request', 'PKCE with S256 is required.', 400, $errorRedirect, $state );
 		}
 
 		$challenge = self::requiredParameter( $parameters, 'code_challenge', 128 );
 		if ( 1 !== preg_match( '/^[A-Za-z0-9_-]{43}$/D', $challenge ) ) {
-			throw new ProtocolException( 'invalid_request', 'The PKCE code challenge is invalid.', 400, $redirectUri, $state );
+			throw new ProtocolException( 'invalid_request', 'The PKCE code challenge is invalid.', 400, $errorRedirect, $state );
 		}
 
 		$resource = array_key_exists( 'resource', $parameters )
@@ -107,40 +157,59 @@ final class AuthorizationService {
 			: $issuer;
 		$policy   = $this->accessPolicy->forIssuer( $issuer );
 		if ( ! $policy->hasResource( $resource ) ) {
-			throw new ProtocolException( 'invalid_target', 'The requested protected resource is invalid.', 400, $redirectUri, $state );
+			throw new ProtocolException( 'invalid_target', 'The requested protected resource is invalid.', 400, $errorRedirect, $state );
 		}
 
-		$scopeInput = array_key_exists( 'scope', $parameters )
+		$scopeInput  = array_key_exists( 'scope', $parameters )
 			? self::requiredParameter( $parameters, 'scope', 1024 )
 			: ( in_array( self::GENERAL_SCOPE, $policy->scopesForResource( $resource ), true ) ? self::GENERAL_SCOPE : '' );
-		if ( '' === $scopeInput ) {
-			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
-		}
 		$scopeTokens = preg_split( '/ +/', trim( $scopeInput ) );
-		if ( ! is_array( $scopeTokens ) || array() === $scopeTokens || in_array( '', $scopeTokens, true ) ) {
-			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
+		if ( '' === $scopeInput || ! is_array( $scopeTokens ) || array() === $scopeTokens || in_array( '', $scopeTokens, true ) ) {
+			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $errorRedirect, $state );
 		}
-		$scopeTokens      = array_values( array_unique( $scopeTokens ) );
-		$continuingAccess = in_array( self::OFFLINE_ACCESS_SCOPE, $scopeTokens, true )
-			|| $client->supportsGrantType( Client::GRANT_REFRESH_TOKEN );
-		$delegatedScopes  = array_values( array_diff( $scopeTokens, array( self::OFFLINE_ACCESS_SCOPE ) ) );
-		$canonicalScope   = $policy->canonicalScope( $resource, $delegatedScopes );
+		$scopeTokens     = array_values( array_unique( $scopeTokens ) );
+		$offlineAccess   = in_array( self::OFFLINE_ACCESS_SCOPE, $scopeTokens, true );
+		$delegatedScopes = array_values( array_diff( $scopeTokens, array( self::OFFLINE_ACCESS_SCOPE ) ) );
+		$canonicalScope  = $policy->canonicalScope( $resource, $delegatedScopes );
 		if ( null === $canonicalScope ) {
-			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $redirectUri, $state );
+			throw new ProtocolException( 'invalid_scope', 'The requested scope is invalid.', 400, $errorRedirect, $state );
 		}
 		// phpcs:enable WordPress.Security.EscapeOutput.ExceptionNotEscaped
 
-		return new AuthorizationRequest(
-			$issuer,
-			$resource,
-			$client,
-			$redirectUri,
-			$canonicalScope,
-			$challenge,
-			$state,
-			$continuingAccess,
-			$policy->consentScopes( $canonicalScope )
+		return array(
+			'issuer'         => $issuer,
+			'client_id'      => $clientId,
+			'redirect_uri'   => $redirectUri,
+			'state'          => $state,
+			'resource'       => $resource,
+			'scope'          => $canonicalScope,
+			'challenge'      => $challenge,
+			'offline_access' => $offlineAccess,
+			'policy'         => $policy,
+			'rate_policy'    => $ratePolicy,
+			'timestamp'      => $timestamp,
 		);
+	}
+
+	/**
+	 * Returns a local redirect authority only for established trusted clients.
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @param string $clientId Exact client identifier.
+	 * @param string $redirectUri Submitted redirect URI.
+	 */
+	private function trustedErrorRedirect( string $issuer, string $clientId, string $redirectUri ): ?string {
+		$registration = $this->clients->findRegistration( $issuer, $clientId );
+		if (
+			null === $registration
+			|| ClientRegistry::STATUS_ACTIVE !== $registration->status()
+			|| ( ClientRegistry::SOURCE_PRE_REGISTERED !== $registration->source() && null === $registration->authorizedAt() )
+		) {
+			return null;
+		}
+		$client = $this->clients->findActive( $issuer, $clientId );
+
+		return null !== $client && $client->allowsRedirectUri( $redirectUri ) ? $redirectUri : null;
 	}
 
 	/**
@@ -168,13 +237,23 @@ final class AuthorizationService {
 
 		$request     = $this->validate( $parameters );
 		$transaction = $this->credentials->issueAuthorizationRequest( $request, $userId, time() );
-		$grant       = $this->credentials->findReusableGrant( $request, $userId, time() );
+		$grant       = $this->requiresVisibleConsent( $request ) ? null : $this->credentials->findReusableGrant( $request, $userId, time() );
 
 		return array(
 			'transaction'       => $transaction,
 			'request'           => $request,
 			'reusable_grant_id' => null === $grant ? null : $grant->id(),
 		);
+	}
+
+	/**
+	 * Reports whether native public-client impersonation requires a fresh prompt.
+	 *
+	 * @param AuthorizationRequest $request Validated authorization request.
+	 */
+	private function requiresVisibleConsent( AuthorizationRequest $request ): bool {
+		return Client::AUTH_NONE === $request->client()->authenticationMethod()
+			&& RedirectUriValidator::isLoopback( $request->redirectUri() );
 	}
 
 	/**
@@ -319,10 +398,13 @@ final class AuthorizationService {
 	 * @param string   $clientId Exact client identifier.
 	 * @param int|null $userId Represented user, or null before authentication.
 	 * @param int      $timestamp Current timestamp.
+	 * @return array<mixed, mixed> Complete validated rate-limit policy.
 	 * @throws ProtocolException When the request is limited or policy is unavailable.
 	 */
-	private function enforceAuthorizationLimit( string $issuer, string $clientId, ?int $userId, int $timestamp ): void {
+	private function enforceAuthorizationLimit( string $issuer, string $clientId, ?int $userId, int $timestamp ): array {
 		$defaults = array(
+			'authorization_issuer'         => 600,
+			'authorization_network'        => 120,
 			'authorization_network_client' => 60,
 			'authorization_user_client'    => 20,
 		);
@@ -331,9 +413,33 @@ final class AuthorizationService {
 			throw new ProtocolException( 'temporarily_unavailable', 'The authorization policy is unavailable.', 503 );
 		}
 
-		$surface = null === $userId ? 'authorization_network_client' : 'authorization_user_client';
-		$limit   = $policy[ $surface ] ?? null;
-		$subject = null === $userId ? SourceAddress::current() . "\0" . $clientId : (string) $userId . "\0" . $clientId;
+		$buckets = null === $userId
+			? array(
+				'authorization_network'        => SourceAddress::current(),
+				'authorization_network_client' => SourceAddress::current() . "\0" . $clientId,
+			)
+			: array( 'authorization_user_client' => (string) $userId . "\0" . $clientId );
+		foreach ( $buckets as $surface => $subject ) {
+			$this->consumeAuthorizationLimit( $policy, $issuer, $surface, $subject, $clientId, $userId, $timestamp );
+		}
+
+		return $policy;
+	}
+
+	/**
+	 * Consumes one validated authorization budget.
+	 *
+	 * @param array<mixed, mixed> $policy Complete operator policy.
+	 * @param string              $issuer Exact issuer.
+	 * @param string              $surface Stable counter surface.
+	 * @param string              $subject Non-secret counter subject.
+	 * @param string              $clientId Exact client identifier.
+	 * @param int|null            $userId Represented user, or null before authentication.
+	 * @param int                 $timestamp Current timestamp.
+	 * @throws ProtocolException When the request is limited or policy is unavailable.
+	 */
+	private function consumeAuthorizationLimit( array $policy, string $issuer, string $surface, string $subject, string $clientId, ?int $userId, int $timestamp ): void {
+		$limit = $policy[ $surface ] ?? null;
 		if ( ! is_int( $limit ) || 1 > $limit ) {
 			throw new ProtocolException( 'temporarily_unavailable', 'The authorization policy is unavailable.', 503 );
 		}

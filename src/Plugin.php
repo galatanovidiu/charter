@@ -206,8 +206,8 @@ final class Plugin {
 		$this->dynamicRegistration     = new DynamicRegistrationService( $this->siteState, $this->clients, $this->rateLimiter, $this->audit, $this->containment, $this->signingKeys );
 		$clientMetadata                = new ClientMetadataResolver( $this->clients, $this->clientMetadataSnapshots, new BoundedHostResolver(), new BoundedDirectJsonFetcher() );
 		$this->authorization           = new AuthorizationService( $this->siteState, $this->clients, $this->credentials, $clientMetadata, $this->rateLimiter, $this->audit, $this->accessPolicy, $this->containment, $this->signingKeys );
-		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy, $this->containment, $this->signingKeys );
-		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens, $this->accessPolicy );
+		$this->tokens                  = new TokenService( $this->siteState, $this->clients, $this->credentials, $this->accessPolicy, $this->containment, $this->signingKeys, $this->rateLimiter, $this->audit );
+		$this->bearerAuthenticator     = new BearerAuthenticator( $this->siteState, $this->tokens, $this->accessPolicy, $this->rateLimiter, $this->audit );
 
 		if ( function_exists( 'add_action' ) ) {
 			$this->registerHooks();
@@ -432,6 +432,7 @@ final class Plugin {
 		$this->cleanup->registerHooks();
 		$this->containment->registerHooks();
 		$this->signingKeys->registerHooks();
+		$this->siteState->registerHooks();
 		$this->bearerAuthenticator->registerHooks();
 	}
 }

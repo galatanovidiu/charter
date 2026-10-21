@@ -378,7 +378,7 @@ final class HttpRunner {
 		$multi_allow            = $responses['multi_allow'];
 
 		$checks = array(
-			'wordpress_6_9_5'                            => '6.9.5' === ( $GLOBALS['wp_version'] ?? null ),
+			'wordpress_6_9'                              => FixtureContract::isSupportedWordPressVersion( $GLOBALS['wp_version'] ?? null ),
 			'missing_bearer_challenge_exact'             => self::hasCode( $missing, 401, 'rest_not_logged_in' )
 				&& self::hasChallenge(
 					$missing,

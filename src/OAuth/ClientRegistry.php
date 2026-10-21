@@ -475,8 +475,8 @@ final class ClientRegistry {
 	 * @throws InvalidArgumentException When the security identity is invalid.
 	 */
 	private function registrationRecord( string $issuer, string $clientId, string $name, array $redirectUris, string $authenticationMethod, bool $supportsRefresh, ?string $clientSecretHash ): array {
-		$name = trim( $name );
-		if ( '' === $issuer || '' === $clientId || 2048 < strlen( $clientId ) || '' === $name || 256 < strlen( $name ) || array() === $redirectUris || 32 < count( $redirectUris ) ) {
+		$name = ClientDisplayName::normalize( $name );
+		if ( '' === $issuer || '' === $clientId || 2048 < strlen( $clientId ) || null === $name || array() === $redirectUris || 32 < count( $redirectUris ) ) {
 			throw new InvalidArgumentException( 'charter_client_registration_invalid' );
 		}
 

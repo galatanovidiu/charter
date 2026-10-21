@@ -48,8 +48,8 @@ final class ProcessRunner {
 			$failure      = $results['failure-output'];
 
 			$checks = array(
-				'wordpress_6_9_5'                   => '6.9.5' === ( $GLOBALS['wp_version'] ?? null )
-					&& self::allWorkerChecks( $normal, 'wordpress_6_9_5' ),
+				'wordpress_6_9'                     => FixtureContract::isSupportedWordPressVersion( $GLOBALS['wp_version'] ?? null )
+					&& self::allWorkerChecks( $normal, 'wordpress_6_9' ),
 				'fresh_bearer_only_succeeded'       => self::workerPassed( $results['bearer-only'] ),
 				'fresh_mixed_rejected_400'          => self::workerCheck( $results['mixed'], 'expected_response' ),
 				'fresh_mixed_validation_suppressed' => self::workerCheck( $results['mixed'], 'validation_count_exact' ),

@@ -165,6 +165,50 @@ final class DynamicRegistrationTest extends WP_UnitTestCase {
 		self::assertStringNotContainsString( $data['client_secret'], $encoded );
 	}
 
+	/** Verifies every registration path rejects visually unsafe display names. */
+	public function testRegistrationRejectsControlAndBidirectionalDisplayNames(): void {
+		$filter       = static fn ( array $policy ): array => array_merge(
+			$policy,
+			array(
+				'network_ten_minutes' => 20,
+				'network_day'         => 20,
+				'issuer_day'          => 20,
+			)
+		);
+		add_filter( 'charter_oauth_rate_limit_policy', $filter );
+		$invalidNames = array(
+			"Unsafe\nclient",
+			"Unsafe\u{0085}client",
+			"Safe\u{202E}evil",
+			"Unsafe\u{2029}client",
+			"Unsafe\u{200D}client",
+			"\u{FEFF}Invisible",
+			"\u{2800}",
+		);
+		try {
+			foreach ( $invalidNames as $name ) {
+				$response = $this->registrationRequest(
+					array(
+						'client_name'                => $name,
+						'redirect_uris'              => array( self::REDIRECT ),
+						'token_endpoint_auth_method' => Client::AUTH_NONE,
+						'response_types'             => array( 'code' ),
+					)
+				);
+				self::assertSame( 400, $response->get_status() );
+			}
+
+			try {
+				Plugin::boot()->clients()->registerPublicClient( $this->issuer, 'unsafe-operator-client', "Unsafe\u{2066}client", array( self::REDIRECT ) );
+				self::fail( 'An unsafe operator-managed display name was accepted.' );
+			} catch ( \InvalidArgumentException $exception ) {
+				self::assertSame( 'charter_client_registration_invalid', $exception->getMessage() );
+			}
+		} finally {
+			remove_filter( 'charter_oauth_rate_limit_policy', $filter );
+		}
+	}
+
 	/**
 	 * Verifies operator stopping does not revoke existing registrations.
 	 */
@@ -209,6 +253,7 @@ final class DynamicRegistrationTest extends WP_UnitTestCase {
 				'client_id'     => $clientId,
 				'code'          => $code,
 				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => self::REDIRECT,
 			)
 		);
 		self::assertIsString( $tokens['access_token'] );

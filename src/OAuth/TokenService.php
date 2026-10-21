@@ -9,6 +9,10 @@ declare(strict_types=1);
 
 namespace GalatanOvidiu\Charter\OAuth;
 
+use GalatanOvidiu\Charter\Security\AuditLog;
+use GalatanOvidiu\Charter\Security\RateLimitDecision;
+use GalatanOvidiu\Charter\Security\RateLimiter;
+use GalatanOvidiu\Charter\Security\SourceAddress;
 use GalatanOvidiu\Charter\Site\SiteState;
 
 /**
@@ -17,11 +21,32 @@ use GalatanOvidiu\Charter\Site\SiteState;
  * @since 0.1.0
  */
 final class TokenService {
+	private const DEFAULT_RATE_POLICY = array(
+		'token_network'             => 600,
+		'token_network_client'      => 300,
+		'token_failures_network'    => 20,
+		'revocation_network'        => 120,
+		'revocation_network_client' => 60,
+	);
 
 	private const REVOCABLE_TOKEN_TYPES = array(
 		CredentialStore::ACCESS_TOKEN,
 		CredentialStore::REFRESH_TOKEN,
 	);
+
+	/**
+	 * Atomic issuer-local abuse counters.
+	 *
+	 * @var RateLimiter
+	 */
+	private readonly RateLimiter $rateLimiter;
+
+	/**
+	 * Secret-free security event ledger.
+	 *
+	 * @var AuditLog
+	 */
+	private readonly AuditLog $audit;
 
 	/**
 	 * Creates the token service.
@@ -34,6 +59,8 @@ final class TokenService {
 	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
 	 * @param EmergencyContainment $containment Issuer-local emergency mode.
 	 * @param SigningKeyLifecycle  $signingKeys Issuer-local credential-key lifecycle.
+	 * @param RateLimiter|null     $rateLimiter Optional shared abuse counter.
+	 * @param AuditLog|null        $audit Optional shared security ledger.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
@@ -41,8 +68,12 @@ final class TokenService {
 		private readonly CredentialStore $credentials,
 		private readonly AccessPolicyProvider $accessPolicy,
 		private readonly EmergencyContainment $containment,
-		private readonly SigningKeyLifecycle $signingKeys
+		private readonly SigningKeyLifecycle $signingKeys,
+		?RateLimiter $rateLimiter = null,
+		?AuditLog $audit = null
 	) {
+		$this->rateLimiter = $rateLimiter ?? new RateLimiter();
+		$this->audit       = $audit ?? new AuditLog();
 	}
 
 	/**
@@ -60,8 +91,14 @@ final class TokenService {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
 		}
 
-		$grantType       = self::requiredParameter( $parameters, 'grant_type', 64 );
-		$clientId        = self::requiredParameter( $parameters, 'client_id', 2048 );
+		$grantType = self::requiredParameter( $parameters, 'grant_type', 64 );
+		$clientId  = self::requiredParameter( $parameters, 'client_id', 2048 );
+		$source    = SourceAddress::current();
+		$timestamp = time();
+		$policy    = $this->rateLimitPolicy( $identity->issuer() );
+		$this->enforceFailureBackoff( $identity->issuer(), 'token_failures_network', $source, $policy, $clientId, $timestamp );
+		$this->enforceRateLimit( $identity->issuer(), 'token_network', $source, $policy, $clientId, $timestamp );
+		$this->enforceRateLimit( $identity->issuer(), 'token_network_client', $source . "\0" . $clientId, $policy, $clientId, $timestamp );
 		$secretPresented = array_key_exists( 'client_secret', $parameters );
 		$clientSecret    = null;
 		if ( $secretPresented ) {
@@ -83,11 +120,14 @@ final class TokenService {
 			throw new ProtocolException( 'temporarily_unavailable', 'OAuth credential issuance is temporarily unavailable.', 503 );
 		}
 
-		return match ( $grantType ) {
+		$response = match ( $grantType ) {
 			Client::GRANT_AUTHORIZATION_CODE => $this->exchangeAuthorizationCode( $parameters, $client ),
 			Client::GRANT_REFRESH_TOKEN => $this->exchangeRefreshToken( $parameters, $client ),
 			default => throw new ProtocolException( 'unsupported_grant_type', 'The requested grant type is not supported.' ),
 		};
+		$this->rateLimiter->relieve( $identity->issuer(), 'token_failures_network', $source );
+
+		return $response;
 	}
 
 	/**
@@ -107,7 +147,12 @@ final class TokenService {
 			throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
 		}
 
-		$clientId        = self::requiredParameter( $parameters, 'client_id', 2048 );
+		$clientId  = self::requiredParameter( $parameters, 'client_id', 2048 );
+		$source    = SourceAddress::current();
+		$timestamp = time();
+		$policy    = $this->rateLimitPolicy( $identity->issuer() );
+		$this->enforceRateLimit( $identity->issuer(), 'revocation_network', $source, $policy, $clientId, $timestamp );
+		$this->enforceRateLimit( $identity->issuer(), 'revocation_network_client', $source . "\0" . $clientId, $policy, $clientId, $timestamp );
 		$secretPresented = array_key_exists( 'client_secret', $parameters );
 		$clientSecret    = null;
 		if ( $secretPresented ) {
@@ -184,6 +229,7 @@ final class TokenService {
 
 		$code     = self::requiredParameter( $parameters, 'code', 256 );
 		$verifier = self::requiredParameter( $parameters, 'code_verifier', 128 );
+		$redirect = self::requiredParameter( $parameters, 'redirect_uri', 2048 );
 		if ( 1 !== preg_match( '/^[A-Za-z0-9\-._~]{43,128}$/D', $verifier ) ) {
 			throw new ProtocolException( 'invalid_grant', 'The authorization code or PKCE verifier is invalid.' );
 		}
@@ -203,7 +249,7 @@ final class TokenService {
 			throw new ProtocolException( 'invalid_grant', 'The authorization code or PKCE verifier is invalid.' );
 		}
 
-		if ( array_key_exists( 'redirect_uri', $parameters ) && $record->redirectUri() !== self::requiredParameter( $parameters, 'redirect_uri', 2048 ) ) {
+		if ( $record->redirectUri() !== $redirect ) {
 			throw new ProtocolException( 'invalid_grant', 'The authorization code redirect binding is invalid.' );
 		}
 
@@ -342,6 +388,83 @@ final class TokenService {
 	 */
 	public static function s256Challenge( string $verifier ): string {
 		return rtrim( strtr( base64_encode( hash( 'sha256', $verifier, true ) ), '+/', '-_' ), '=' ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- RFC 7636 requires base64url encoding of the SHA-256 digest.
+	}
+
+	/**
+	 * Returns the complete operator-filtered credential-surface policy.
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @return array<mixed, mixed>
+	 * @throws ProtocolException When policy is unavailable.
+	 */
+	private function rateLimitPolicy( string $issuer ): array {
+		$policy = apply_filters( 'charter_oauth_rate_limit_policy', self::DEFAULT_RATE_POLICY, $issuer ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Public advanced operator policy hook.
+		if ( ! is_array( $policy ) ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The credential processing policy is unavailable.', 503 );
+		}
+
+		return $policy;
+	}
+
+	/**
+	 * Applies one ordinary endpoint budget.
+	 *
+	 * @param string              $issuer Exact issuer.
+	 * @param string              $surface Stable endpoint surface and policy key.
+	 * @param string              $subject Non-secret bucket subject.
+	 * @param array<mixed, mixed> $policy Complete operator policy.
+	 * @param string              $clientId Submitted client identifier.
+	 * @param int                 $timestamp Current timestamp.
+	 * @throws ProtocolException When policy denies the request.
+	 */
+	private function enforceRateLimit( string $issuer, string $surface, string $subject, array $policy, string $clientId, int $timestamp ): void {
+		$limit = $policy[ $surface ] ?? null;
+		if ( ! is_int( $limit ) || 1 > $limit ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The credential processing policy is unavailable.', 503 );
+		}
+		$decision = $this->rateLimiter->consume( $issuer, $surface, $subject, $limit, MINUTE_IN_SECONDS, $timestamp );
+		$this->throwWhenLimited( $decision, $issuer, $surface, $clientId, $timestamp );
+	}
+
+	/**
+	 * Applies the failure-specific progressive token backoff.
+	 *
+	 * @param string              $issuer Exact issuer.
+	 * @param string              $surface Stable failure surface and policy key.
+	 * @param string              $subject Non-secret bucket subject.
+	 * @param array<mixed, mixed> $policy Complete operator policy.
+	 * @param string              $clientId Submitted client identifier.
+	 * @param int                 $timestamp Current timestamp.
+	 * @throws ProtocolException When policy denies the request.
+	 */
+	private function enforceFailureBackoff( string $issuer, string $surface, string $subject, array $policy, string $clientId, int $timestamp ): void {
+		$limit = $policy[ $surface ] ?? null;
+		if ( ! is_int( $limit ) || 1 > $limit ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The credential processing policy is unavailable.', 503 );
+		}
+		$decision = $this->rateLimiter->consumeWithBackoff( $issuer, $surface, $subject, $limit, MINUTE_IN_SECONDS, 15 * MINUTE_IN_SECONDS, $timestamp );
+		$this->throwWhenLimited( $decision, $issuer, $surface, $clientId, $timestamp );
+	}
+
+	/**
+	 * Converts a denied atomic counter into one generic OAuth result.
+	 *
+	 * @param RateLimitDecision $decision Atomic counter outcome.
+	 * @param string            $issuer Exact issuer.
+	 * @param string            $surface Stable endpoint surface.
+	 * @param string            $clientId Submitted client identifier.
+	 * @param int               $timestamp Current timestamp.
+	 * @throws ProtocolException When the request is limited.
+	 */
+	private function throwWhenLimited( RateLimitDecision $decision, string $issuer, string $surface, string $clientId, int $timestamp ): void {
+		if ( $decision->allowed() ) {
+			return;
+		}
+		if ( $decision->count() === $decision->limit() + 1 ) {
+			$this->audit->record( $issuer, 'rate_limit_escalated', 'blocked', $surface, null, null, $clientId, SourceAddress::current(), $timestamp );
+		}
+
+		throw new ProtocolException( 'temporarily_unavailable', 'Too many credential requests.', 429, null, null, $decision->retryAfter() ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Typed retry metadata is not rendered here.
 	}
 
 	/**

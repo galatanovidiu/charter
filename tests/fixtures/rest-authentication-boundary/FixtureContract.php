@@ -26,7 +26,7 @@ final class FixtureContract {
 	 * @var list<string>
 	 */
 	private const PROCESS_CHECK_KEYS = array(
-		'wordpress_6_9_5',
+		'wordpress_6_9',
 		'fresh_bearer_only_succeeded',
 		'fresh_mixed_rejected_400',
 		'fresh_mixed_validation_suppressed',
@@ -51,7 +51,7 @@ final class FixtureContract {
 	 * @var list<string>
 	 */
 	private const HTTP_CHECK_KEYS = array(
-		'wordpress_6_9_5',
+		'wordpress_6_9',
 		'missing_bearer_challenge_exact',
 		'invalid_bearer_challenge_exact',
 		'invalid_transport_rejected_400',
@@ -101,6 +101,15 @@ final class FixtureContract {
 	 */
 	public static function httpResult( array $checks ): array {
 		return self::result( self::HTTP_RECORD_TYPE, self::HTTP_CHECK_KEYS, $checks );
+	}
+
+	/**
+	 * Reports whether the disposable proof is running on the supported WordPress 6.9 line.
+	 *
+	 * @param mixed $version Candidate WordPress version.
+	 */
+	public static function isSupportedWordPressVersion( mixed $version ): bool {
+		return is_string( $version ) && 1 === preg_match( '/^6\.9\.[0-9]+(?:[-+].*)?$/D', $version );
 	}
 
 	/**

@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace GalatanOvidiu\Charter\Site;
 
+use GalatanOvidiu\Charter\Security\TrustedProxyPolicy;
 use InvalidArgumentException;
 
 /**
@@ -187,10 +188,14 @@ final class SiteState {
 		if ( ! is_string( $requestHost ) || '' === $requestHost ) {
 			return 'cli' === PHP_SAPI;
 		}
+		$requestOrigin = ( new TrustedProxyPolicy() )->publicOrigin( $_SERVER, is_ssl() );
+		if ( null === $requestOrigin ) {
+			return false;
+		}
 
 		try {
 			$requestIdentity = SiteIdentity::fromUrl(
-				( is_ssl() ? 'https://' : 'http://' ) . $requestHost,
+				$requestOrigin,
 				self::developmentMode(),
 				self::developmentHosts()
 			);
@@ -199,6 +204,102 @@ final class SiteState {
 		}
 
 		return hash_equals( $identity->issuer(), $requestIdentity->issuer() );
+	}
+
+	/** Registers deployment-boundary diagnostics with WordPress Site Health. */
+	public function registerHooks(): void {
+		add_filter( 'site_status_tests', array( $this, 'registerSiteHealthTest' ) );
+	}
+
+	/**
+	 * Adds the current site's proxy and development-mode diagnostic.
+	 *
+	 * @param array<string, mixed> $tests Registered Site Health tests.
+	 * @return array<string, mixed>
+	 */
+	public function registerSiteHealthTest( array $tests ): array {
+		$direct                             = $tests['direct'] ?? array();
+		$direct                             = is_array( $direct ) ? $direct : array();
+		$direct['charter_oauth_public_url'] = array(
+			'label' => __( 'Charter OAuth public URL and proxy trust', 'charter' ),
+			'test'  => array( $this, 'siteHealthResult' ),
+		);
+		$tests['direct']                    = $direct;
+
+		return $tests;
+	}
+
+	/**
+	 * Projects the request-origin security boundary for Site Health.
+	 *
+	 * @return array{status:string,label:string,badge:array{label:string,color:string},description:string,test:string}
+	 */
+	public function siteHealthResult(): array {
+		$policy = new TrustedProxyPolicy();
+		if ( ! $policy->configurationValid() ) {
+			return self::siteHealthProjection(
+				'critical',
+				__( 'Charter trusted-proxy configuration is invalid', 'charter' ),
+				__( 'CHARTER_TRUSTED_PROXIES must be an array containing only exact IP addresses or CIDR networks. Forwarded origin data is disabled until this is corrected.', 'charter' )
+			);
+		}
+
+		$forwardedPresent = isset( $_SERVER['HTTP_X_FORWARDED_FOR'] )
+			|| isset( $_SERVER['HTTP_X_FORWARDED_HOST'] )
+			|| isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] )
+			|| isset( $_SERVER['HTTP_X_FORWARDED_PORT'] );
+		if ( $forwardedPresent && ! $policy->immediatePeerTrusted( $_SERVER ) ) {
+			return self::siteHealthProjection(
+				'recommended',
+				__( 'Charter is ignoring untrusted proxy headers', 'charter' ),
+				__( 'The immediate peer is not in CHARTER_TRUSTED_PROXIES. Charter safely uses the direct peer for abuse buckets, which may group many users behind one proxy, and ignores forwarded public-origin values.', 'charter' )
+			);
+		}
+		if ( $forwardedPresent && null === $policy->publicOrigin( $_SERVER, is_ssl() ) ) {
+			return self::siteHealthProjection(
+				'critical',
+				__( 'Charter cannot validate the forwarded public URL', 'charter' ),
+				__( 'The trusted proxy supplied malformed or ambiguous forwarded host, protocol, or port values. OAuth endpoints fail closed until the proxy sends one canonical public origin.', 'charter' )
+			);
+		}
+
+		$identity = $this->identity();
+		if ( null !== $identity && str_starts_with( $identity->issuer(), 'http://' ) ) {
+			return self::siteHealthProjection(
+				'recommended',
+				__( 'Charter OAuth is using insecure development mode', 'charter' ),
+				__( 'This issuer uses HTTP under the explicit local-development exception. Do not use this configuration for production OAuth credentials.', 'charter' )
+			);
+		}
+
+		return self::siteHealthProjection(
+			'good',
+			__( 'Charter OAuth public URL trust is configured', 'charter' ),
+			$policy->configured()
+				? __( 'Forwarded origin and client-address values are accepted only from the configured immediate proxy networks.', 'charter' )
+				: __( 'Charter uses the direct request origin and peer address; no proxy is trusted to supply forwarded authority.', 'charter' )
+		);
+	}
+
+	/**
+	 * Returns one WordPress Site Health result.
+	 *
+	 * @param string $status Result severity.
+	 * @param string $label Result label.
+	 * @param string $description Safe operator description.
+	 * @return array{status:string,label:string,badge:array{label:string,color:string},description:string,test:string}
+	 */
+	private static function siteHealthProjection( string $status, string $label, string $description ): array {
+		return array(
+			'status'      => $status,
+			'label'       => $label,
+			'badge'       => array(
+				'label' => __( 'Security', 'charter' ),
+				'color' => 'blue',
+			),
+			'description' => '<p>' . esc_html( $description ) . '</p>',
+			'test'        => 'charter_oauth_public_url',
+		);
 	}
 
 	/**

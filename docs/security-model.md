@@ -26,6 +26,8 @@ Consent binds the user, client, exact resource, scopes, redirect, grant policy, 
 
 Anonymous registration and authorization are protected by source-, client-, user-, and issuer-bounded rate limits. Rate-limit keys are stored as digests.
 
+`CHARTER_TRUSTED_PROXIES` is the single authority for forwarded public-origin and client-address data. Its entries are exact IP addresses or CIDR networks. Forwarded headers from any other immediate peer are ignored, and malformed configuration disables forwarded authority rather than guessing. Site Health exposes ignored proxy headers, shared direct-proxy buckets, and HTTP development mode.
+
 ## Client ID Metadata Document fetching
 
 Charter treats every Client ID Metadata Document URL as untrusted outbound input. It requires HTTPS, resolves bounded DNS chains, rejects every non-global terminal address, pins the screened address set to one TLS-verified cURL connection, and disables redirects, retries, connection reuse, compression, and ambient proxy use.
