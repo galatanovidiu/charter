@@ -55,7 +55,7 @@ scan_private_file() {
 		return 1
 	fi
 
-	if LC_ALL=C rg --quiet --ignore-case \
+	if LC_ALL=C grep -Eqi \
 		-e '-----BEGIN [A-Z ]*PRIVATE KEY-----' \
 		-e '(^|[^a-z])(authorization|proxy-authorization|cookie|set-cookie)[[:space:]]*[:=]' \
 		-e '(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+/-]+' \
@@ -242,7 +242,7 @@ assert_runtime_confinement() {
 		binding_count="$("${timeout_command}" --signal=TERM --kill-after=2 10 docker inspect --format '{{len .HostConfig.PortBindings}}' "${container_id}")"
 		network_count="$("${timeout_command}" --signal=TERM --kill-after=2 10 docker inspect --format '{{len .NetworkSettings.Networks}}' "${container_id}")"
 		[[ 0 == "${binding_count}" && 1 == "${network_count}" ]] || return 1
-		"${timeout_command}" --signal=TERM --kill-after=2 10 docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "${container_id}" | rg --quiet "^${expected_network}$" || return 1
+		"${timeout_command}" --signal=TERM --kill-after=2 10 docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "${container_id}" | grep -Eq "^${expected_network}$" || return 1
 	done <<<"${container_ids}"
 
 	for _ in {1..30}; do
@@ -377,7 +377,7 @@ run_phpunit_lane() {
 			exec -T "${service}" "${phpunit[@]}" tests/Integration/CimdOutboundSafety
 	fi
 
-	if ! LC_ALL=C rg --quiet 'OK \([1-9][0-9]* tests?,' "${p3_private_dir}/${case_id}.log"; then
+	if ! LC_ALL=C grep -Eq 'OK \([1-9][0-9]* tests?,' "${p3_private_dir}/${case_id}.log"; then
 		p3_failure_emitted=true
 		emit_record failed hostile "${case_id}-empty" "${runtime}" test-failed 0
 		return 1
@@ -487,7 +487,7 @@ if [[ -z "${timeout_command}" ]]; then
 	exit 1
 fi
 
-for command_name in curl docker openssl php rg unzip; do
+for command_name in curl docker grep openssl php unzip; do
 	if ! command -v "${command_name}" >/dev/null 2>&1; then
 		p3_failure_emitted=true
 		emit_record failed preflight required-command static capability-unavailable 0

@@ -240,12 +240,12 @@ assert_network_boundaries() {
 	client_networks="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$(container_id client)")"
 	backend_networks="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$(container_id fpm)")"
 
-	if ! rg --quiet 'client-edge$' <<<"${client_networks}" || rg --quiet 'backend$' <<<"${client_networks}"; then
+	if ! grep -Eq 'client-edge$' <<<"${client_networks}" || grep -Eq 'backend$' <<<"${client_networks}"; then
 		printf 'P5 runner rejected the client network membership.\n' >&2
 		return 1
 	fi
 
-	if ! rg --quiet 'backend$' <<<"${backend_networks}" || rg --quiet 'client-edge$' <<<"${backend_networks}"; then
+	if ! grep -Eq 'backend$' <<<"${backend_networks}" || grep -Eq 'client-edge$' <<<"${backend_networks}"; then
 		printf 'P5 runner rejected the backend network membership.\n' >&2
 		return 1
 	fi
@@ -271,7 +271,7 @@ assert_network_boundaries() {
 
 	relay_mounts="$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "${relay_id}")"
 
-	if rg --quiet '/workspace$|/certs$|http-captures|/wordpress$' <<<"${relay_mounts}"; then
+	if grep -Eq '/workspace$|/certs$|http-captures|/wordpress$' <<<"${relay_mounts}"; then
 		printf 'P5 runner rejected sensitive loopback relay mounts.\n' >&2
 		return 1
 	fi
