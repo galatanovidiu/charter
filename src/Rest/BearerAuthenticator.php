@@ -242,12 +242,12 @@ final class BearerAuthenticator {
 		unset( $handler );
 		$this->cleanupRequest( $request );
 
-		if ( ! $response instanceof WP_Error || ! $this->errors->contains( $response ) ) {
+		if ( ! $response instanceof WP_Error || ! $this->errors->offsetExists( $response ) ) {
 			return $response;
 		}
 
 		$details = $this->errors[ $response ];
-		$this->errors->detach( $response );
+		$this->errors->offsetUnset( $response );
 		$body      = array(
 			'error'             => null === $details['error'] ? 'invalid_token' : $details['error'],
 			'error_description' => $details['description'],

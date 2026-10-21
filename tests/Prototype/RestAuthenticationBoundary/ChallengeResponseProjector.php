@@ -82,7 +82,7 @@ final class ChallengeResponseProjector {
 			}
 			$parts[] = $name . '="' . addcslashes( $value, '\\"' ) . '"'; }
 		$response->header( 'WWW-Authenticate', 'Bearer ' . implode( ', ', $parts ) );
-		$this->proofErrors->detach( $error );
+		$this->proofErrors->offsetUnset( $error );
 		return $response;
 	}
 
@@ -93,7 +93,7 @@ final class ChallengeResponseProjector {
 	 * @return bool Whether proof-owned.
 	 */
 	public function isProofError( WP_Error $error ): bool {
-		return $this->proofErrors->contains( $error );
+		return $this->proofErrors->offsetExists( $error );
 	}
 
 	/** Clears all unprojected proof errors. */
