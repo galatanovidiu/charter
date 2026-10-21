@@ -17,6 +17,12 @@ if ( false === $charter_tests_directory || '' === $charter_tests_directory ) {
 	$charter_tests_directory = '/wordpress-phpunit';
 }
 
+$charter_tests_config = '/tmp/charter-wp-tests-config.php';
+if ( ! defined( 'WP_TESTS_CONFIG_FILE_PATH' ) && is_readable( $charter_tests_config ) ) {
+	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound -- WordPress PHPUnit bootstrap contract.
+	define( 'WP_TESTS_CONFIG_FILE_PATH', $charter_tests_config );
+}
+
 require_once $charter_tests_directory . '/includes/functions.php';
 
 tests_add_filter(
