@@ -95,6 +95,9 @@ jobs:
                   WP_ENV_PHP_VERSION: '8.4'
               run: npm run test:integration:ci
 
+            - name: Build and inspect reproducible ZIP bytes
+              run: npm run artifact:reproducible
+
             - name: Run complete OAuth behavior matrix
               env:
                   WP_ENV_PHP_VERSION: '8.4'
@@ -115,9 +118,6 @@ jobs:
               env:
                   WP_ENV_PHP_VERSION: '8.4'
               run: npm run test:integration:ci
-
-            - name: Build and inspect reproducible ZIP bytes
-              run: npm run artifact:reproducible
 
             - name: Exercise the ZIP lifecycle and run Plugin Check
               env:
