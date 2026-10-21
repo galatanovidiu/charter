@@ -118,7 +118,7 @@ if [[ ! "${artifact_sha256}" =~ ^[a-f0-9]{64}$ ]]; then
 	exit 1
 fi
 
-wordpress_url="$(WORDPRESS_BRANCH=6.9 WORDPRESS_PHP_VERSION=8.4 bash "${project_root}/tools/resolve-wordpress-core.sh")"
+wordpress_url="${CHARTER_ATOMIC_WORDPRESS_URL:-https://downloads.w.org/release/wordpress-6.9.5.zip}"
 if [[ "${wordpress_url}" != 'https://downloads.w.org/release/wordpress-6.9.5.zip' ]]; then
 	fixed_failure
 	exit 1

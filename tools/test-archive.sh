@@ -32,9 +32,6 @@ cat >"${artifact_config}" <<'JSON'
 		"WP_DEBUG": true,
 		"WP_DEBUG_LOG": true,
 		"WP_DEVELOPMENT_MODE": "plugin"
-	},
-	"mappings": {
-		"wp-content/uploads/charter-artifacts": "./build"
 	}
 }
 JSON
@@ -54,8 +51,9 @@ trap cleanup EXIT INT TERM
 
 wp-env destroy --config="${artifact_config}" --force >/dev/null 2>&1 || true
 wp-env start --config="${artifact_config}" --auto-port
+wp-env run cli --config="${artifact_config}" sh -c 'cat > /tmp/charter.zip' < build/charter.zip
 wp-env run cli --config="${artifact_config}" wp plugin install \
-	/var/www/html/wp-content/uploads/charter-artifacts/charter.zip \
+	/tmp/charter.zip \
 	--activate \
 	--force
 wp-env run cli --config="${artifact_config}" wp plugin is-active charter
@@ -115,7 +113,7 @@ wp-env run cli --config="${artifact_config}" wp eval '
 	}
 '
 wp-env run cli --config="${artifact_config}" wp plugin install \
-	/var/www/html/wp-content/uploads/charter-artifacts/charter.zip \
+	/tmp/charter.zip \
 	--force
 wp-env run cli --config="${artifact_config}" wp plugin activate charter
 wp-env run cli --config="${artifact_config}" wp plugin is-active charter

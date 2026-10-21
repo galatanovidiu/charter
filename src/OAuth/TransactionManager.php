@@ -111,6 +111,7 @@ final class TransactionManager {
 		}
 
 		$address = self::parseHost( $hostValue );
+		$flags   = self::clientFlags();
 
 		try {
 			$database = new mysqli();
@@ -120,7 +121,8 @@ final class TransactionManager {
 				$password,
 				$name,
 				$address['port'],
-				$address['socket']
+				$address['socket'],
+				$flags
 			);
 			$charset = self::charset();
 			if ( '' !== $charset ) {
@@ -131,6 +133,24 @@ final class TransactionManager {
 		}
 
 		return $database;
+	}
+
+	/**
+	 * Returns WordPress's validated mysqli client transport flags.
+	 *
+	 * @throws RuntimeException When the configured flags are invalid.
+	 */
+	private static function clientFlags(): int {
+		if ( ! defined( 'MYSQL_CLIENT_FLAGS' ) ) {
+			return 0;
+		}
+
+		$flags = constant( 'MYSQL_CLIENT_FLAGS' );
+		if ( ! is_int( $flags ) || $flags < 0 ) {
+			throw new RuntimeException( 'charter_database_configuration_invalid' );
+		}
+
+		return $flags;
 	}
 
 	/**

@@ -446,6 +446,7 @@ charter_http_status="$(curl --silent --show-error \
 	--data-urlencode 'client_id=charter-http-client' \
 	--data-urlencode "code=${charter_http_code}" \
 	--data-urlencode "code_verifier=${charter_http_verifier}" \
+	--data-urlencode 'redirect_uri=https://client.example.test/callback' \
 	"${charter_http_token_endpoint}")"
 assert_status 400 "${charter_http_status}" 'authorization code replay rejection'
 

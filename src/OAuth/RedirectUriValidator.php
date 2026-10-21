@@ -60,6 +60,19 @@ final class RedirectUriValidator {
 	}
 
 	/**
+	 * Reports whether one accepted callback uses a device-local loopback host.
+	 *
+	 * @param string $uri Validated redirect URI.
+	 */
+	public static function isLoopback( string $uri ): bool {
+		$parts = wp_parse_url( $uri );
+
+		return false !== $parts
+			&& 'http' === strtolower( (string) ( $parts['scheme'] ?? '' ) )
+			&& in_array( strtolower( (string) ( $parts['host'] ?? '' ) ), array( 'localhost', '127.0.0.1', '::1', '[::1]' ), true );
+	}
+
+	/**
 	 * Rejects ambiguous or malformed DNS and address spellings.
 	 *
 	 * @param string $host Parsed URI host.

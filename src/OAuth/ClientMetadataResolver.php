@@ -60,6 +60,13 @@ final class ClientMetadataResolver {
 
 		$snapshot = $this->snapshots->findFresh( $issuer, $clientId, $timestamp );
 		if ( null !== $snapshot ) {
+			try {
+				if ( ! $this->clients->ensureCimdClient( $issuer, $clientId, $timestamp ) ) {
+					return null;
+				}
+			} catch ( RuntimeException ) {
+				throw new ClientMetadataResolutionException( 'persistence_failed' );
+			}
 			return $snapshot->client( $issuer );
 		}
 

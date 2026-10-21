@@ -29,6 +29,7 @@ final class RetentionCleanup {
 	private const HISTORY_RETENTION         = 7776000;
 	private const UNUSED_CLIENT_RETENTION   = 604800;
 	private const INACTIVE_CLIENT_RETENTION = 7776000;
+	private const RATE_LIMIT_BATCH          = 1000;
 
 	/**
 	 * Owned non-reconnecting transaction service.
@@ -51,7 +52,7 @@ final class RetentionCleanup {
 	 *
 	 * @param string $issuer Exact prepared site issuer.
 	 * @param int    $timestamp Current Unix timestamp.
-	 * @param int    $limit Maximum records deleted across every category.
+	 * @param int    $limit Maximum records deleted across retained OAuth categories; expired rate rows use their own bounded batch.
 	 * @throws RuntimeException When cleanup input or persistence fails.
 	 */
 	public function runBatch( string $issuer, int $timestamp, int $limit = 100 ): CleanupBatchResult {
@@ -62,15 +63,18 @@ final class RetentionCleanup {
 
 		return $this->transactions->run(
 			function ( mysqli $database ) use ( $issuer, $timestamp, $limit ): CleanupBatchResult {
-				$deleted   = self::emptyCounts();
-				$remaining = $limit;
+				$deleted                = self::emptyCounts();
+				$remaining              = $limit;
+				$deleted['rate_limits'] = $this->deleteExpiredRateLimits( $database, $timestamp, self::RATE_LIMIT_BATCH );
 
 				$categories = array(
 					'transactions'    => fn ( int $categoryLimit ): int => $this->deleteShortLivedCredentials( $database, $issuer, CredentialStore::AUTHORIZATION_REQUEST, $timestamp - self::SHORT_RETENTION, $categoryLimit, true ),
 					'codes'           => fn ( int $categoryLimit ): int => $this->deleteShortLivedCredentials( $database, $issuer, CredentialStore::AUTHORIZATION_CODE, $timestamp - self::SHORT_RETENTION, $categoryLimit, false ),
 					'access_tokens'   => fn ( int $categoryLimit ): int => $this->deleteShortLivedCredentials( $database, $issuer, CredentialStore::ACCESS_TOKEN, $timestamp - self::SHORT_RETENTION, $categoryLimit, false ),
 					'refresh_tokens'  => fn ( int $categoryLimit ): int => $this->deleteClosedRefreshRecords( $database, $issuer, $timestamp - self::REFRESH_RETENTION, $categoryLimit ),
-					'dynamic_clients' => fn ( int $categoryLimit ): int => $this->deleteStaleDynamicClients( $database, $issuer, $timestamp, $categoryLimit ),
+					'dynamic_clients' => fn ( int $categoryLimit ): int => $this->deleteStaleClients( $database, $issuer, ClientRegistry::SOURCE_DYNAMIC, $timestamp, $categoryLimit ),
+					'cimd_clients'    => fn ( int $categoryLimit ): int => $this->deleteStaleClients( $database, $issuer, ClientRegistry::SOURCE_CIMD, $timestamp, $categoryLimit ),
+					'cimd_snapshots'  => fn ( int $categoryLimit ): int => $this->deleteExpiredClientMetadataSnapshots( $database, $issuer, $timestamp, $categoryLimit ),
 					'grants'          => fn ( int $categoryLimit ): int => $this->deleteTerminalGrants( $database, $issuer, $timestamp - self::HISTORY_RETENTION, $categoryLimit ),
 					'audit_events'    => fn ( int $categoryLimit ): int => $this->deleteAuditEvents( $database, $issuer, $timestamp - self::HISTORY_RETENTION, $categoryLimit ),
 				);
@@ -84,7 +88,7 @@ final class RetentionCleanup {
 					$remaining           -= $count;
 				}
 
-				$hasMore = array_sum( $deleted ) === $limit && $this->hasEligibleRecord( $database, $issuer, $timestamp );
+				$hasMore = $this->hasEligibleRecord( $database, $issuer, $timestamp );
 
 				return new CleanupBatchResult( $deleted, $hasMore );
 			}
@@ -149,14 +153,15 @@ final class RetentionCleanup {
 	}
 
 	/**
-	 * Deletes stale DCR registrations only without an authoritative active grant.
+	 * Deletes stale dynamic or CIMD clients only without an authoritative active grant.
 	 *
 	 * @param mysqli $database Owned connection.
 	 * @param string $issuer Exact issuer.
+	 * @param string $source Exact client-registration source.
 	 * @param int    $timestamp Current Unix timestamp.
 	 * @param int    $limit Remaining batch capacity.
 	 */
-	private function deleteStaleDynamicClients( mysqli $database, string $issuer, int $timestamp, int $limit ): int {
+	private function deleteStaleClients( mysqli $database, string $issuer, string $source, int $timestamp, int $limit ): int {
 		$clients = self::quotedTable( Schema::clientTable() );
 		$grants  = self::quotedTable( Schema::grantTable() );
 		$ids     = $this->selectIds(
@@ -179,7 +184,7 @@ final class RetentionCleanup {
 			array(
 				self::issuerDigest( $issuer ),
 				$issuer,
-				ClientRegistry::SOURCE_DYNAMIC,
+				$source,
 				ClientRegistry::STATUS_ACTIVE,
 				$timestamp - self::UNUSED_CLIENT_RETENTION,
 				$timestamp - self::INACTIVE_CLIENT_RETENTION,
@@ -190,6 +195,51 @@ final class RetentionCleanup {
 		);
 
 		return $this->deleteIds( $database, $clients, $issuer, $ids );
+	}
+
+	/**
+	 * Deletes expired reusable CIMD projections for one exact issuer.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param string $issuer Exact issuer.
+	 * @param int    $timestamp Current Unix timestamp.
+	 * @param int    $limit Remaining batch capacity.
+	 */
+	private function deleteExpiredClientMetadataSnapshots( mysqli $database, string $issuer, int $timestamp, int $limit ): int {
+		$table = self::quotedTable( Schema::clientMetadataTable() );
+		$ids   = $this->selectIds(
+			$database,
+			"SELECT id FROM {$table} WHERE issuer_digest = ? AND issuer = ? AND fresh_until <= ? ORDER BY id ASC LIMIT {$limit}",
+			array( self::issuerDigest( $issuer ), $issuer, $timestamp )
+		);
+
+		return $this->deleteIds( $database, $table, $issuer, $ids );
+	}
+
+	/**
+	 * Deletes expired current-site abuse counters.
+	 *
+	 * Rate-limit tables are already isolated by the WordPress site prefix and
+	 * bucket digests do not retain the issuer value.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param int    $timestamp Current Unix timestamp.
+	 * @param int    $limit Remaining batch capacity.
+	 * @throws RuntimeException When deletion fails.
+	 */
+	private function deleteExpiredRateLimits( mysqli $database, int $timestamp, int $limit ): int {
+		$table  = self::quotedTable( Schema::rateLimitTable() );
+		$result = $database->execute_query( "DELETE FROM {$table} WHERE expires_at <= ? ORDER BY expires_at ASC LIMIT {$limit}", array( $timestamp ) ); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Trusted table and clamped LIMIT; expiry remains bound.
+		if ( true !== $result ) {
+			throw new RuntimeException( 'charter_cleanup_delete_failed' );
+		}
+
+		$count = self::integerValue( $database->affected_rows );
+		if ( null === $count ) {
+			throw new RuntimeException( 'charter_cleanup_count_invalid' );
+		}
+
+		return $count;
 	}
 
 	/**
@@ -208,6 +258,7 @@ final class RetentionCleanup {
 			"SELECT grant_record.id FROM {$grants} grant_record
 			WHERE grant_record.issuer = ? AND (
 				(grant_record.status IN ('revoked','expired') AND grant_record.revoked_at IS NOT NULL AND grant_record.revoked_at <= ?)
+					OR (grant_record.status = 'active' AND grant_record.continuing_access = 0 AND grant_record.last_used_at <= ?)
 				OR (
 					grant_record.status = 'active' AND grant_record.continuing_access = 1
 					AND grant_record.refresh_absolute_expires_at IS NOT NULL
@@ -217,7 +268,7 @@ final class RetentionCleanup {
 			)
 			AND NOT EXISTS (SELECT 1 FROM {$credentials} credential WHERE credential.grant_id = grant_record.id)
 			ORDER BY grant_record.id ASC LIMIT {$limit}",
-			array( $issuer, $cutoff, $cutoff )
+			array( $issuer, $cutoff, $cutoff, $cutoff )
 		);
 
 		return $this->deleteIds( $database, $grants, $issuer, $ids );
@@ -255,7 +306,10 @@ final class RetentionCleanup {
 			fn (): int => $this->countShortLivedCredential( $database, $issuer, CredentialStore::AUTHORIZATION_CODE, $timestamp - self::SHORT_RETENTION, false ),
 			fn (): int => $this->countShortLivedCredential( $database, $issuer, CredentialStore::ACCESS_TOKEN, $timestamp - self::SHORT_RETENTION, false ),
 			fn (): int => $this->countClosedRefreshRecord( $database, $issuer, $timestamp - self::REFRESH_RETENTION ),
-			fn (): int => $this->countStaleDynamicClient( $database, $issuer, $timestamp ),
+			fn (): int => $this->countStaleClient( $database, $issuer, ClientRegistry::SOURCE_DYNAMIC, $timestamp ),
+			fn (): int => $this->countStaleClient( $database, $issuer, ClientRegistry::SOURCE_CIMD, $timestamp ),
+			fn (): int => $this->countExpiredClientMetadataSnapshot( $database, $issuer, $timestamp ),
+			fn (): int => $this->countExpiredRateLimit( $database, $timestamp ),
 			fn (): int => $this->countTerminalGrant( $database, $issuer, $timestamp - self::HISTORY_RETENTION ),
 			fn (): int => $this->countAuditEvent( $database, $issuer, $timestamp - self::HISTORY_RETENTION ),
 		);
@@ -309,13 +363,14 @@ final class RetentionCleanup {
 	}
 
 	/**
-	 * Returns one when a stale dynamic client remains eligible.
+	 * Returns one when a stale dynamic or CIMD client remains eligible.
 	 *
 	 * @param mysqli $database Owned connection.
 	 * @param string $issuer Exact issuer.
+	 * @param string $source Exact client-registration source.
 	 * @param int    $timestamp Current Unix timestamp.
 	 */
-	private function countStaleDynamicClient( mysqli $database, string $issuer, int $timestamp ): int {
+	private function countStaleClient( mysqli $database, string $issuer, string $source, int $timestamp ): int {
 		$clients = self::quotedTable( Schema::clientTable() );
 		$grants  = self::quotedTable( Schema::grantTable() );
 
@@ -329,7 +384,7 @@ final class RetentionCleanup {
 			array(
 				self::issuerDigest( $issuer ),
 				$issuer,
-				ClientRegistry::SOURCE_DYNAMIC,
+				$source,
 				ClientRegistry::STATUS_ACTIVE,
 				$timestamp - self::UNUSED_CLIENT_RETENTION,
 				$timestamp - self::INACTIVE_CLIENT_RETENTION,
@@ -338,6 +393,35 @@ final class RetentionCleanup {
 				$timestamp,
 			)
 		);
+	}
+
+	/**
+	 * Returns one when an expired CIMD snapshot remains eligible.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param string $issuer Exact issuer.
+	 * @param int    $timestamp Current Unix timestamp.
+	 */
+	private function countExpiredClientMetadataSnapshot( mysqli $database, string $issuer, int $timestamp ): int {
+		$table = self::quotedTable( Schema::clientMetadataTable() );
+
+		return $this->exists(
+			$database,
+			"SELECT id FROM {$table} WHERE issuer_digest = ? AND issuer = ? AND fresh_until <= ? LIMIT 1",
+			array( self::issuerDigest( $issuer ), $issuer, $timestamp )
+		);
+	}
+
+	/**
+	 * Returns one when an expired current-site abuse counter remains eligible.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param int    $timestamp Current Unix timestamp.
+	 */
+	private function countExpiredRateLimit( mysqli $database, int $timestamp ): int {
+		$table = self::quotedTable( Schema::rateLimitTable() );
+
+		return $this->exists( $database, "SELECT bucket_digest FROM {$table} WHERE expires_at <= ? LIMIT 1", array( $timestamp ) );
 	}
 
 	/**
@@ -355,11 +439,12 @@ final class RetentionCleanup {
 			$database,
 			"SELECT grant_record.id FROM {$grants} grant_record WHERE grant_record.issuer = ?
 			AND ((grant_record.status IN ('revoked','expired') AND grant_record.revoked_at IS NOT NULL AND grant_record.revoked_at <= ?)
+			OR (grant_record.status = 'active' AND grant_record.continuing_access = 0 AND grant_record.last_used_at <= ?)
 			OR (grant_record.status = 'active' AND grant_record.continuing_access = 1
 			AND grant_record.refresh_absolute_expires_at IS NOT NULL AND grant_record.refresh_inactivity_expires_at IS NOT NULL
 			AND LEAST(grant_record.refresh_absolute_expires_at, grant_record.refresh_inactivity_expires_at) <= ?))
 			AND NOT EXISTS (SELECT 1 FROM {$credentials} credential WHERE credential.grant_id = grant_record.id) LIMIT 1",
-			array( $issuer, $cutoff, $cutoff )
+			array( $issuer, $cutoff, $cutoff, $cutoff )
 		);
 	}
 
@@ -462,7 +547,7 @@ final class RetentionCleanup {
 	/**
 	 * Returns stable zero counts for every retention category.
 	 *
-	 * @return array{transactions:int,codes:int,access_tokens:int,refresh_tokens:int,dynamic_clients:int,grants:int,audit_events:int}
+	 * @return array{transactions:int,codes:int,access_tokens:int,refresh_tokens:int,dynamic_clients:int,cimd_clients:int,cimd_snapshots:int,rate_limits:int,grants:int,audit_events:int}
 	 */
 	private static function emptyCounts(): array {
 		return array(
@@ -471,6 +556,9 @@ final class RetentionCleanup {
 			'access_tokens'   => 0,
 			'refresh_tokens'  => 0,
 			'dynamic_clients' => 0,
+			'cimd_clients'    => 0,
+			'cimd_snapshots'  => 0,
+			'rate_limits'     => 0,
 			'grants'          => 0,
 			'audit_events'    => 0,
 		);

@@ -2,7 +2,7 @@
 
 ## Prepare your environment
 
-Charter requires PHP 8.4 or later, Composer 2, Node.js 24, npm 11 or later, and Docker.
+Charter requires PHP 8.4 or later, Composer 2, Node.js 24.18 or later in the Node.js 24 release line, npm 11.16 or later, and Docker.
 
 Install the locked dependencies:
 

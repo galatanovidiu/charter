@@ -51,7 +51,7 @@ final class WorkerContract {
 	 * @var list<string>
 	 */
 	private const CHECK_KEYS = array(
-		'wordpress_6_9_5',
+		'wordpress_6_9',
 		'expected_response',
 		'validation_count_exact',
 		'callbacks_exact',

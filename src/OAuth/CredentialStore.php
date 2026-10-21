@@ -133,7 +133,7 @@ final class CredentialStore {
 					$timestamp + 300,
 					$timestamp,
 					$grantId,
-					null,
+					$reusableGrantId,
 					$current->continuingAccess(),
 					$current->clientMetadataFingerprint()
 				);
@@ -238,7 +238,11 @@ final class CredentialStore {
 				}
 
 				if ( null !== $current->consumedAt() ) {
-					$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', 'authorization_code_replay' );
+					if ( null === $current->parentId() ) {
+						$this->deactivateGrant( $database, $grantId, $timestamp, 'revoked', 'authorization_code_replay' );
+					} else {
+						$this->deactivateAuthorizationCodeDescendants( $database, $grantId, $current->id(), $timestamp );
+					}
 					return false;
 				}
 
@@ -262,7 +266,7 @@ final class CredentialStore {
 					$timestamp + self::ACCESS_LIFETIME,
 					$timestamp,
 					$grantId,
-					null,
+					$current->id(),
 					$grant->continuingAccess(),
 					$grant->clientMetadataFingerprint()
 				);
@@ -287,7 +291,7 @@ final class CredentialStore {
 						min( $absoluteExpiry, $timestamp + self::REFRESH_INACTIVITY_LIFETIME ),
 						$timestamp,
 						$grantId,
-						null,
+						$current->id(),
 						true,
 						$grant->clientMetadataFingerprint()
 					);
@@ -354,6 +358,7 @@ final class CredentialStore {
 					throw new RuntimeException( 'charter_refresh_grant_invalid' );
 				}
 				$nextRefreshExpiry = min( $absoluteExpiry, $timestamp + self::REFRESH_INACTIVITY_LIFETIME );
+				$familyRoot        = $current->parentId() ?? $current->id();
 
 				$this->consumeCredential( $database, $current->id(), $timestamp );
 				$this->insertCredential(
@@ -371,7 +376,7 @@ final class CredentialStore {
 					$timestamp + self::ACCESS_LIFETIME,
 					$timestamp,
 					$grantId,
-					null,
+					$familyRoot,
 					true,
 					$grant->clientMetadataFingerprint()
 				);
@@ -390,7 +395,7 @@ final class CredentialStore {
 					$nextRefreshExpiry,
 					$timestamp,
 					$grantId,
-					$current->id(),
+					$familyRoot,
 					true,
 					$grant->clientMetadataFingerprint()
 				);
@@ -1210,6 +1215,27 @@ final class CredentialStore {
 		}
 		if ( true !== $result ) {
 			throw new RuntimeException( 'charter_grant_transition_conflict' );
+		}
+	}
+
+	/**
+	 * Invalidates only credentials descended from a replayed reused-grant code.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param int    $grantId Exact grant identifier.
+	 * @param int    $codeId Replayed authorization-code identifier.
+	 * @param int    $timestamp Current Unix timestamp.
+	 * @throws RuntimeException When descendant invalidation fails.
+	 */
+	private function deactivateAuthorizationCodeDescendants( mysqli $database, int $grantId, int $codeId, int $timestamp ): void {
+		$table  = self::quotedTable( Schema::credentialTable() );
+		$result = $database->execute_query(
+			"UPDATE {$table} SET consumed_at = ?
+			WHERE grant_id = ? AND parent_id = ? AND credential_type IN (?,?) AND consumed_at IS NULL",
+			array( $timestamp, $grantId, $codeId, self::ACCESS_TOKEN, self::REFRESH_TOKEN )
+		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Exact code-family invalidation remains inside the replay transaction.
+		if ( true !== $result ) {
+			throw new RuntimeException( 'charter_grant_revocation_failed' );
 		}
 	}
 

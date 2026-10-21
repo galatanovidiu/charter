@@ -32,13 +32,23 @@ final class SequenceRemoteJsonFetcher implements RemoteJsonFetcher {
 	private int $fetchCount = 0;
 
 	/**
+	 * Exact identifiers accepted by this fixture.
+	 *
+	 * @var list<string>
+	 */
+	private array $clientIds;
+
+	/**
 	 * Creates one deterministic response sequence.
 	 *
 	 * @param array $responses Responses or failures.
+	 * @param array $clientIds Exact accepted identifiers.
 	 * @phpstan-param list<array{body:string,headers:array<string,list<string>>}|ClientMetadataResolutionException> $responses
+	 * @phpstan-param list<string> $clientIds
 	 */
-	public function __construct( array $responses ) {
+	public function __construct( array $responses, array $clientIds = array( 'https://metadata.example.test/client.json' ) ) {
 		$this->responses = $responses;
+		$this->clientIds = $clientIds;
 	}
 
 	/** Verifies the deterministic fixture is available. */
@@ -54,7 +64,7 @@ final class SequenceRemoteJsonFetcher implements RemoteJsonFetcher {
 	 * @throws ClientMetadataResolutionException When the fixture result is a failure.
 	 */
 	public function fetch( ClientMetadataIdentifier $identifier, array $screenedAddresses ): BoundedHttpResponse {
-		if ( 'https://metadata.example.test/client.json' !== $identifier->exact() || array( '8.8.8.8' ) !== $screenedAddresses ) {
+		if ( ! in_array( $identifier->exact(), $this->clientIds, true ) || array( '8.8.8.8' ) !== $screenedAddresses ) {
 			throw new ClientMetadataResolutionException( 'transport_failed' );
 		}
 		++$this->fetchCount;

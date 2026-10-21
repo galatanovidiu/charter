@@ -217,6 +217,17 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertSame( array( $this->issuer ), $enabledResource->get_data()['authorization_servers'] );
 	}
 
+	/** Verifies insecure local issuer mode remains visible through Site Health. */
+	public function testLocalDevelopmentIssuerIsVisibleInSiteHealth(): void {
+		$this->enableIssuer();
+		$result = Plugin::boot()->siteState()->siteHealthResult();
+
+		self::assertSame( 'recommended', $result['status'] );
+		self::assertStringContainsString( 'insecure development mode', $result['label'] );
+		$tests = apply_filters( 'site_status_tests', array() ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Exercises the Core Site Health registry.
+		self::assertIsArray( $tests['direct']['charter_oauth_public_url'] ?? null );
+	}
+
 	/**
 	 * Verifies an untrusted request host cannot redefine or operate the issuer.
 	 *
@@ -269,6 +280,18 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 				)
 			)
 		);
+		$missingRedirectCode = $this->authorizeCode();
+		$missingRedirect     = $this->dispatchToken(
+			array(
+				'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+				'client_id'     => self::CLIENT_ID,
+				'code'          => $missingRedirectCode,
+				'code_verifier' => self::VERIFIER,
+			)
+		);
+		self::assertSame( 400, $missingRedirect->get_status() );
+		self::assertSame( 'invalid_request', $missingRedirect->get_data()['error'] );
+
 		$code = $this->authorizeCode();
 
 		$wrongVerifier = $this->exchangeCode(
@@ -332,6 +355,68 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertIsString( $encoded );
 		self::assertStringNotContainsString( $code, $encoded );
 		self::assertStringNotContainsString( $tokenData['access_token'], $encoded );
+	}
+
+	/** Verifies replay closes only descendants of a code issued on reused consent. */
+	public function testReplayedReusedGrantCodePreservesPriorRefreshFamily(): void {
+		$this->enableIssuer();
+		$plugin   = Plugin::boot();
+		$clientId = 'replay-isolation-client';
+		self::assertTrue( $plugin->clients()->registerPublicClient( $this->issuer, $clientId, 'Replay isolation client', array( self::REDIRECT_URI ), true ) );
+		$parameters = array_replace( $this->authorizationParameters(), array( 'client_id' => $clientId ) );
+
+		$firstConsent = $plugin->authorization()->begin( $parameters, $this->userId );
+		$firstCode    = self::queryParameter( $plugin->authorization()->complete( $firstConsent['transaction'], $this->userId, true ), 'code' );
+		$firstTokens  = $plugin->tokens()->exchange(
+			array(
+				'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+				'client_id'     => $clientId,
+				'code'          => $firstCode,
+				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => self::REDIRECT_URI,
+			)
+		);
+
+		$secondConsent = $plugin->authorization()->begin( $parameters, $this->userId );
+		self::assertIsInt( $secondConsent['reusable_grant_id'] );
+		$secondCode   = self::queryParameter(
+			$plugin->authorization()->complete( $secondConsent['transaction'], $this->userId, true, $secondConsent['reusable_grant_id'] ),
+			'code'
+		);
+		$secondTokens = $plugin->tokens()->exchange(
+			array(
+				'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+				'client_id'     => $clientId,
+				'code'          => $secondCode,
+				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => self::REDIRECT_URI,
+			)
+		);
+		try {
+			$plugin->tokens()->exchange(
+				array(
+					'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+					'client_id'     => $clientId,
+					'code'          => $secondCode,
+					'code_verifier' => self::VERIFIER,
+					'redirect_uri'  => self::REDIRECT_URI,
+				)
+			);
+			self::fail( 'A replayed authorization code was accepted.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_grant', $exception->error() );
+		}
+
+		self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/protected', $firstTokens['access_token'] )->get_status() );
+		self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', $secondTokens['access_token'] )->get_status() );
+		$rotated = $plugin->tokens()->exchange(
+			array(
+				'grant_type'    => Client::GRANT_REFRESH_TOKEN,
+				'client_id'     => $clientId,
+				'refresh_token' => $firstTokens['refresh_token'],
+			)
+		);
+		self::assertIsString( $rotated['refresh_token'] ?? null );
 	}
 
 	/**
@@ -416,6 +501,7 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 				'client_secret' => $secret,
 				'code'          => $code,
 				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => self::CONFIDENTIAL_REDIRECT_URI,
 				'resource'      => $this->issuer,
 			)
 		);
@@ -476,6 +562,7 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 				'client_secret' => $secret,
 				'code'          => $secondCode,
 				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => self::CONFIDENTIAL_REDIRECT_URI,
 			)
 		);
 		self::assertSame( 200, $secondIssued->get_status() );
@@ -524,23 +611,23 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 			)
 		);
 
-		$consent = $plugin->authorization()->begin(
-			array(
-				'response_type'         => 'code',
-				'client_id'             => self::PUBLIC_REFRESH_CLIENT_ID,
-				'redirect_uri'          => 'http://127.0.0.1:53127/callback',
-				'code_challenge'        => TokenService::s256Challenge( self::VERIFIER ),
-				'code_challenge_method' => 'S256',
-				'resource'              => $this->issuer,
-				'scope'                 => AuthorizationService::GENERAL_SCOPE,
-			),
-			$this->userId
+		$parameters = array(
+			'response_type'         => 'code',
+			'client_id'             => self::PUBLIC_REFRESH_CLIENT_ID,
+			'redirect_uri'          => 'http://127.0.0.1:53127/callback',
+			'code_challenge'        => TokenService::s256Challenge( self::VERIFIER ),
+			'code_challenge_method' => 'S256',
+			'resource'              => $this->issuer,
+			'scope'                 => AuthorizationService::GENERAL_SCOPE,
 		);
+		$consent    = $plugin->authorization()->begin( $parameters, $this->userId );
 		self::assertTrue( $consent['request']->continuingAccessRequested(), 'A registered refresh grant is a continuing-access signal.' );
-		$code = self::queryParameter(
+		$code            = self::queryParameter(
 			$plugin->authorization()->complete( $consent['transaction'], $this->userId, true ),
 			'code'
 		);
+		$repeatedConsent = $plugin->authorization()->begin( $parameters, $this->userId );
+		self::assertNull( $repeatedConsent['reusable_grant_id'], 'A public loopback client must require visible consent for every authorization.' );
 
 		$secretRejected = $this->dispatchToken(
 			array(
@@ -549,6 +636,7 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 				'client_secret' => 'public-clients-have-no-secret',
 				'code'          => $code,
 				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => 'http://127.0.0.1:53127/callback',
 			)
 		);
 		self::assertSame( 401, $secretRejected->get_status() );
@@ -560,6 +648,7 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 				'client_id'     => self::PUBLIC_REFRESH_CLIENT_ID,
 				'code'          => $code,
 				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => 'http://127.0.0.1:53127/callback',
 			)
 		);
 		self::assertSame( 200, $issued->get_status() );
@@ -789,6 +878,93 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertNull( $revoked->get_data() );
 		self::assertSame( 'no-store', $revoked->get_headers()['Cache-Control'] );
 		self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', $accessToken )->get_status() );
+	}
+
+	/** Verifies credential-processing limits are generic, source-bound, and observable. */
+	public function testCredentialSurfaceRateLimitsCannotBeBypassedWithRotatingIdentifiers(): void {
+		$this->enableIssuer();
+		$filter = static fn ( array $policy ): array => array_merge(
+			$policy,
+			array(
+				'token_failures_network' => 1,
+				'revocation_network'     => 1,
+				'invalid_bearer_network' => 1,
+			)
+		);
+		add_filter( 'charter_oauth_rate_limit_policy', $filter );
+		try {
+			$firstTokenFailure = $this->dispatchToken(
+				array(
+					'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+					'client_id'     => 'unknown-client-one',
+					'client_secret' => 'invalid-secret',
+					'code'          => 'invalid-code',
+					'code_verifier' => self::VERIFIER,
+				)
+			);
+			self::assertSame( 401, $firstTokenFailure->get_status() );
+
+			$limitedToken = $this->dispatchToken(
+				array(
+					'grant_type'    => Client::GRANT_AUTHORIZATION_CODE,
+					'client_id'     => 'unknown-client-two',
+					'client_secret' => 'invalid-secret',
+					'code'          => 'invalid-code',
+					'code_verifier' => self::VERIFIER,
+				)
+			);
+			self::assertSame( 429, $limitedToken->get_status() );
+			self::assertSame( 'temporarily_unavailable', $limitedToken->get_data()['error'] );
+			self::assertMatchesRegularExpression( '/^[1-9][0-9]*$/D', $limitedToken->get_headers()['Retry-After'] );
+
+			Plugin::boot()->rateLimiter()->deleteAll();
+			$firstRevocation = $this->dispatchRevocation(
+				array(
+					'client_id' => 'unknown-client-one',
+					'token'     => 'unknown-token',
+				)
+			);
+			self::assertSame( 401, $firstRevocation->get_status() );
+			$limitedRevocation = $this->dispatchRevocation(
+				array(
+					'client_id' => 'unknown-client-two',
+					'token'     => 'unknown-token',
+				)
+			);
+			self::assertSame( 429, $limitedRevocation->get_status() );
+			self::assertSame( 'temporarily_unavailable', $limitedRevocation->get_data()['error'] );
+			self::assertMatchesRegularExpression( '/^[1-9][0-9]*$/D', $limitedRevocation->get_headers()['Retry-After'] );
+
+			Plugin::boot()->rateLimiter()->deleteAll();
+			$firstBearerFailure = $this->dispatchBearer( '/charter-test/v1/protected', 'cha_' . str_repeat( 'x', 43 ) );
+			self::assertSame( 401, $firstBearerFailure->get_status() );
+			$limitedBearer = $this->dispatchBearer( '/charter-test/v1/protected', 'cha_' . str_repeat( 'y', 43 ) );
+			self::assertSame( 429, $limitedBearer->get_status() );
+			self::assertSame( 'temporarily_unavailable', $limitedBearer->get_data()['error'] );
+			self::assertMatchesRegularExpression( '/^[1-9][0-9]*$/D', $limitedBearer->get_headers()['Retry-After'] );
+		} finally {
+			remove_filter( 'charter_oauth_rate_limit_policy', $filter );
+		}
+	}
+
+	/** Verifies valid Bearer traffic remains available after the shared failure budget is exhausted. */
+	public function testValidBearerTrafficDoesNotErasePriorInvalidCredentialFailures(): void {
+		$this->enableIssuer();
+		$token  = $this->issueAccessToken();
+		$filter = static fn ( array $policy ): array => array_merge( $policy, array( 'invalid_bearer_network' => 1 ) );
+		add_filter( 'charter_oauth_rate_limit_policy', $filter );
+		try {
+			self::assertSame( 401, $this->dispatchBearer( '/charter-test/v1/protected', 'cha_' . str_repeat( 'x', 43 ) )->get_status() );
+			self::assertSame( 200, $this->dispatchBearer( '/charter-test/v1/protected', $token )->get_status(), 'A valid token must be validated even when another in-flight or failed request has filled the source budget.' );
+			$escalations = array_values( array_filter( Plugin::boot()->audit()->listForIssuer( $this->issuer ), static fn ( $event ): bool => 'rate_limit_escalated' === $event->eventType() && 'invalid_bearer_network' === $event->reason() ) );
+			self::assertSame( array(), $escalations, 'A successful validation must not record a blocked invalid-Bearer escalation.' );
+			$limited = $this->dispatchBearer( '/charter-test/v1/protected', 'cha_' . str_repeat( 'y', 43 ) );
+			self::assertSame( 429, $limited->get_status() );
+			$escalations = array_values( array_filter( Plugin::boot()->audit()->listForIssuer( $this->issuer ), static fn ( $event ): bool => 'rate_limit_escalated' === $event->eventType() && 'invalid_bearer_network' === $event->reason() ) );
+			self::assertCount( 1, $escalations );
+		} finally {
+			remove_filter( 'charter_oauth_rate_limit_policy', $filter );
+		}
 	}
 
 	/** Verifies current effective WordPress salts rotate without an adoption outage. */
@@ -1419,7 +1595,8 @@ final class FirstOAuthPathTest extends WP_UnitTestCase {
 		self::assertSame( self::MCP_SCOPE, $rotatedAccessRecord->scope() );
 		self::assertSame( $this->mcpResource(), $rotatedRefreshRecord->resource() );
 		self::assertSame( self::MCP_SCOPE, $rotatedRefreshRecord->scope() );
-		self::assertSame( $refreshRecord->id(), $rotatedRefreshRecord->parentId() );
+		self::assertIsInt( $refreshRecord->parentId() );
+		self::assertSame( $refreshRecord->parentId(), $rotatedRefreshRecord->parentId() );
 
 		$this->mcpProviderAvailable = false;
 		$metadata                   = $this->dispatch( 'GET', '/charter/v1/metadata/protected-resource/wp-json/charter-test/v1/mcp' );

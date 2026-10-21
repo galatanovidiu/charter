@@ -34,7 +34,7 @@ final class CredentialRecord {
 	 * @param int         $expiresAt     Absolute expiry timestamp.
 	 * @param int|null    $consumedAt    Consumption or revocation timestamp.
 	 * @param int|null    $grantId       Owning grant when authority exists.
-	 * @param int|null    $parentId      Prior refresh member when applicable.
+	 * @param int|null    $parentId      Reused grant marker for a code, or originating code for descendants.
 	 * @param bool        $continuingAccess Whether continuing access was approved.
 	 * @param string      $clientMetadataFingerprint Validated client metadata binding.
 	 */
@@ -167,7 +167,7 @@ final class CredentialRecord {
 	}
 
 	/**
-	 * Returns the prior refresh member identifier when applicable.
+	 * Returns the type-specific authorization lineage marker when applicable.
 	 *
 	 * @since 0.1.0
 	 */
