@@ -19,12 +19,15 @@ p5_http_capture_dir="${p5_runtime_dir}/http-captures"
 p5_state_dir="${p5_runtime_dir}/state"
 p5_wordpress_root="${p5_runtime_dir}/wordpress"
 p5_project_name="charter-p5-$$-${RANDOM}"
+p5_host_uid="$(id -u)"
+p5_host_gid="$(id -g)"
 capture_counter=0
 p5_compose_started=false
 p5_emit_failure_logs=true
 p5_process_mode=fresh
 
-install -d -m 700 "${p5_private_dir}" "${p5_server_cert_dir}" "${p5_client_cert_dir}" "${p5_http_capture_dir}" "${p5_state_dir}"
+install -d -m 700 "${p5_private_dir}" "${p5_server_cert_dir}" "${p5_client_cert_dir}" "${p5_http_capture_dir}"
+install -d -m 755 "${p5_state_dir}"
 
 export P5_PROJECT_ROOT="${project_root}"
 export P5_SERVER_CERT_DIR="${p5_server_cert_dir}"
@@ -33,6 +36,8 @@ export P5_HTTP_CAPTURE_DIR="${p5_http_capture_dir}"
 export P5_STATE_DIR="${p5_state_dir}"
 export P5_WORDPRESS_ROOT="${p5_wordpress_root}"
 export P5_ISSUER="https://issuer.charter.test"
+export P5_HOST_UID="${p5_host_uid}"
+export P5_HOST_GID="${p5_host_gid}"
 
 allocate_loopback_port() {
 	php -r '
@@ -107,6 +112,7 @@ set_runtime_state() {
 	local state=$1
 
 	php -r 'file_put_contents($argv[1], $argv[2] . PHP_EOL);' "${p5_state_dir}/current" "${state}"
+	chmod 644 "${p5_state_dir}/current"
 }
 
 set_runtime_state prepared
@@ -133,6 +139,10 @@ generate_certificates() {
 		-days 1 >/dev/null 2>&1
 	openssl x509 -in "${p5_server_cert_dir}/ca.crt" -out "${p5_client_cert_dir}/ca.crt" >/dev/null 2>&1
 	chmod 600 "${p5_private_dir}/ca.key" "${p5_server_cert_dir}/server.crt.key"
+	chmod 644 \
+		"${p5_server_cert_dir}/ca.crt" \
+		"${p5_server_cert_dir}/server.crt" \
+		"${p5_client_cert_dir}/ca.crt"
 }
 
 prepare_wordpress_source() {

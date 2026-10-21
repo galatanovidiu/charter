@@ -56,6 +56,9 @@ services:
 
   proxy:
     image: haproxy:3.2-alpine@sha256:79799e8b2977e60802774fa53d29e6b54e045402cdd8a8b9fe43923e7095a047
+    user: "${P5_HOST_UID}:${P5_HOST_GID}"
+    cap_add:
+      - NET_BIND_SERVICE
     volumes:
       - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - ${P5_SERVER_CERT_DIR}:/certs:ro
@@ -107,6 +110,7 @@ services:
 
   client:
     image: curlimages/curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922
+    user: "${P5_HOST_UID}:${P5_HOST_GID}"
     entrypoint: ["/bin/sh", "-c"]
     command: ["sleep 3600"]
     volumes:
