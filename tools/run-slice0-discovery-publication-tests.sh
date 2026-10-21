@@ -78,12 +78,12 @@ if [[ 79 -ne "${p5_cleanup_exit}" ]] || [[ "${p5_cleanup_output}" != *'{"cleanup
 	exit 1
 fi
 
-if docker ps -a --format '{{.Label "com.docker.compose.project"}}' | rg --quiet '^charter-p5-'; then
+if docker ps -a --format '{{.Label "com.docker.compose.project"}}' | grep -Eq '^charter-p5-'; then
 	printf 'P5 interruption cleanup probe left a container behind.\n' >&2
 	exit 1
 fi
 
-if find /tmp -maxdepth 1 -type d -name 'charter-p5-discovery.*' -print -quit | rg --quiet '.'; then
+if find /tmp -maxdepth 1 -type d -name 'charter-p5-discovery.*' -print -quit | grep -Eq '.'; then
 	printf 'P5 interruption cleanup probe left private proof material behind.\n' >&2
 	exit 1
 fi
