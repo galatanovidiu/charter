@@ -1,119 +1,84 @@
 # Charter
 
-Charter is a WordPress OAuth 2.1 authorization server with site-local issuers, exact protected-resource boundaries, and WordPress-native administration.
+**OAuth 2.1 for WordPress, built for MCP.**
 
-Charter publishes RFC 8414 and RFC 9728 metadata and supports Authorization Code with mandatory PKCE S256, opaque one-hour access tokens, rotating refresh tokens with replay containment, RFC 7009 revocation, RFC 7591 Dynamic Client Registration, and HTTPS Client ID Metadata Documents. Integrations can protect exact WordPress REST handlers and register narrower resources and scopes without replacing the handler's WordPress permission callback.
+Charter turns a WordPress site into a standards-based OAuth 2.1 authorization server. MCP servers and other WordPress REST integrations can use it to give clients scoped, revocable access without replacing WordPress users, roles, capabilities, or permission checks.
 
-Users approve first use and material changes, inspect active authorizations under **Profile > Connected Apps**, and disconnect complete grants. Site and network administrators can govern clients and grants, pause issuance, lock down Bearer access, monitor bounded retention, and manage explicit signing-key replacements without exposing credential material.
+Instead of asking people to share long-lived WordPress credentials with every application, Charter gives each client its own authorization flow. The user signs in to WordPress, reviews the requested access, and can disconnect the application later.
 
-## Platform requirements
+## Built for MCP, useful beyond it
 
-- WordPress 6.9 or later
-- PHP 8.4 or later
-- Node.js 24 for local WordPress environments and release tooling
-- Composer 2
-- Docker for WordPress integration and artifact activation tests
+Charter is a general OAuth server, not an MCP server or tool catalog. It provides the authorization layer that an MCP server needs while leaving tools, resources, and business operations to the integrating plugin.
 
-The distributed plugin has no Composer runtime dependencies and does not ship a `vendor/` directory.
+Its MCP-focused compatibility includes:
 
-## Install the development build
+- OAuth authorization-server and protected-resource discovery.
+- Authorization Code with mandatory PKCE S256.
+- Resource-bound access and scope challenges.
+- Public desktop and command-line clients with runtime localhost callbacks.
+- Dynamic Client Registration and HTTPS Client ID Metadata Documents.
+- Compatibility with Claude Code's client metadata and local callback flow.
+- Rotating refresh tokens for approved continuing access.
 
-1. Install PHP and Node.js dependencies:
+An MCP integration can protect its WordPress REST endpoints with Charter and define its own resource and scopes. Charter authenticates the represented WordPress user; the integration's existing WordPress permission checks and any tool-level safeguards still decide what that user may do.
 
-    ```bash
-    composer install
-    npm ci
-    ```
+## Why Charter
 
-2. Start the local WordPress environment:
+- **Standards-based access.** Clients discover the issuer and protected resources through standard OAuth metadata instead of hard-coded endpoint conventions.
+- **WordPress-native authorization.** OAuth adds a new authentication path without weakening or replacing WordPress permission checks.
+- **Clear user control.** Users approve access, see connected applications under **Profile > Connected Apps**, and revoke complete grants.
+- **Safer credentials.** Access tokens are opaque, short-lived, and resource-bound. Refresh tokens rotate, and replay closes the affected credential family.
+- **Operational control.** Administrators can govern clients and grants, pause new issuance, lock down Bearer access during an incident, and inspect security health without exposing credential material.
+- **Site-local isolation.** Every site has its own issuer and OAuth state. Multisite installations remain isolated per site under Network Admin control.
 
-    ```bash
-    npm run env:start
-    ```
+## How it works
 
-3. Open the URL reported by `wp-env`.
+1. A WordPress integration protects one or more REST handlers and declares the OAuth resource and scopes it needs.
+2. The client discovers Charter's OAuth metadata and starts an Authorization Code flow with PKCE.
+3. WordPress authenticates the user and Charter shows the requested application, resource, and permissions.
+4. After approval, Charter issues credentials bound to that client, user, resource, and scope set.
+5. On every protected request, Charter establishes the WordPress user before the integration's existing permission callback runs.
 
-4. In WordPress, open **Settings > Charter OAuth**.
+Public REST routes and existing cookie, nonce, and Application Password authentication continue to work normally. Requests cannot combine an existing WordPress identity with a Charter Bearer credential.
 
-    Charter starts in the **Prepared** state for a supported single-site activation. Verify both exact metadata URLs shown on the page, select the verification checkbox, and click **Enable OAuth**.
+## Supported clients
 
-    Prepared metadata identifies the canonical issuer and resource without advertising disabled grants or endpoints. The operational capability fields appear after OAuth is enabled.
+Charter supports public and confidential OAuth clients:
 
-5. Under **Pre-register a client**, enter its client ID, display name, exact redirect URI, public or confidential type, and continuing-access policy. Native loopback clients may use an HTTP URI on literal `127.0.0.1` or `[::1]`; only the runtime port may vary.
+- Desktop, command-line, and MCP clients can use PKCE and exact localhost callbacks.
+- Hosted applications can use confidential clients with exact HTTPS callbacks.
+- Clients may be registered by an administrator, through Dynamic Client Registration, or through an HTTPS Client ID Metadata Document.
 
-    A confidential-client secret is displayed once in a no-store response. Save it immediately: Charter persists only its password hash and cannot retrieve the original value later. Confidential clients send the secret as `client_secret` in the form-encoded token or revocation request; HTTP Basic authentication is not supported.
+Charter implements OAuth authorization, not OpenID Connect. It does not issue ID Tokens or act as a general-purpose single sign-on provider.
 
-Charter uses the canonical bare origin as both the issuer identifier and the default protected-resource identifier. HTTP issuer URLs work only in an explicit local WordPress environment or when `CHARTER_DEVELOPMENT_MODE` is `true`; non-loopback development hosts also require an exact entry in the `CHARTER_DEVELOPMENT_HOSTS` array constant.
+## Get started
 
-On Multisite, network-activate Charter, then prepare and enable each site under **Network Settings > Charter OAuth**. Per-site activation is unsupported and does not initialize OAuth storage.
+1. Download `charter.zip` from the [GitHub Releases page](https://github.com/galatanovidiu/charter/releases).
+2. Install and activate it through **Plugins > Add New Plugin**. On Multisite, network-activate Charter.
+3. Open **Settings > Charter OAuth**. On Multisite, use **Network Settings > Charter OAuth** to select a site.
+4. Verify the displayed authorization-server and protected-resource metadata URLs, then enable the issuer.
+5. Register a client or install an integration that connects its protected REST routes to Charter.
 
-## Protect a REST handler
+Charter requires WordPress 6.9 or later, PHP 8.4 or later, and an HTTPS site with a bare-origin public URL. HTTP is supported only for explicit local development. Multisite installations require network activation.
 
-Wrap the exact handler you pass to `register_rest_route()`:
+## Security by design
 
-```php
-use GalatanOvidiu\Charter\Rest\ProtectedRoute;
+Charter uses exact redirect and resource matching, mandatory PKCE, one-time authorization codes, rotating refresh tokens, replay containment, bounded abuse controls, secure client-metadata fetching, and explicit revocation. It adds no telemetry.
 
-register_rest_route(
-    'example/v1',
-    '/records',
-    ProtectedRoute::assign(
-        array(
-            'methods'             => 'GET',
-            'permission_callback' => static fn (): bool => current_user_can( 'read' ),
-            'callback'            => 'example_get_records',
-        )
-    )
-);
-```
+Deactivation keeps OAuth state so the plugin can be restored safely. Deleting Charter permanently removes its tables, configuration, grants, credentials, audit history, and scheduled cleanup state from every affected site.
 
-The default assignment requires the `wordpress:access` scope for the site's canonical resource. Charter establishes the represented WordPress user before the existing `permission_callback` runs and restores the prior request identity afterward. Public handlers and requests authenticated with cookies/nonces or Application Passwords continue through WordPress without Bearer validation. A request that combines an existing WordPress identity with a Charter Bearer credential is rejected.
+For the complete threat model and operational boundaries, read the [security model](docs/security-model.md) and [privacy and retention guide](docs/privacy.md). Security issues should be reported privately as described in [SECURITY.md](SECURITY.md).
 
-## Run quality checks
+## Documentation
 
-Run the fast local checks:
+- [Operator guide](docs/operator-guide.md) — installation, upgrades, Multisite, health monitoring, incident controls, backups, and removal.
+- [Administrator guide](docs/administrator-guide.md) — issuer setup, client policy, grant governance, and Network Admin.
+- [User guide](docs/user-guide.md) — consent, connected applications, and revocation.
+- [Integrator guide](docs/integrator-guide.md) — OAuth discovery, client profiles, REST protection, resources, and scopes.
 
-```bash
-composer check
-npm run format:check
-npm run test:javascript
-```
+## Contributing
 
-Run WordPress integration tests:
-
-```bash
-npm run test:integration:ci
-```
-
-Run the focused real-HTTP lifecycle through WordPress login, consent, public and confidential code exchange, concurrent refresh replay, grant closure, RFC 7009 revocation, and protected REST requests:
-
-```bash
-npm run test:oauth:http:ci
-```
-
-Build, verify, activate, and run Plugin Check against the production artifact:
-
-```bash
-npm run build:zip
-npm run artifact:verify
-npm run artifact:test
-npm run secret:check
-```
-
-The release artifact is written to `build/charter.zip`.
-
-## Read the product guides
-
-- [Operator guide](docs/operator-guide.md): installation, upgrades, Multisite, cron, incident controls, signing keys, backups, and removal.
-- [Administrator guide](docs/administrator-guide.md): issuer enablement, client policy, grant governance, containment, and Network Admin.
-- [User guide](docs/user-guide.md): consent, current access, and disconnection.
-- [Integrator guide](docs/integrator-guide.md): discovery, clients, flows, REST protection, resources, and scopes.
-- [Privacy and retention](docs/privacy.md): stored data, outbound metadata requests, retention, and deletion.
-- [Security model](docs/security-model.md): trust boundaries, credential handling, SSRF controls, administration, and deliberate limits.
-
-## Contribute and release
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for development commands, [SECURITY.md](SECURITY.md) for private vulnerability reporting, and [RELEASING.md](RELEASING.md) for the protected release process.
+Charter is open source. Bug reports, suggestions, and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for project guidance.
 
 ## License
 

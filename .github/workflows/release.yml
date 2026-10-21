@@ -4,11 +4,21 @@ on:
     workflow_dispatch:
         inputs:
             version:
-                description: Bare semantic version of an existing GitHub Release
+                description: Bare semantic version matching an existing Git tag
                 required: true
                 type: string
-            dry_run:
-                description: Validate the WordPress.org deployment without committing to SVN
+            publish_github:
+                description: Publish or update the GitHub Release after verification
+                required: true
+                default: true
+                type: boolean
+            deploy_wordpress_org:
+                description: Run the separately gated WordPress.org deployment
+                required: true
+                default: false
+                type: boolean
+            wordpress_org_dry_run:
+                description: Validate WordPress.org deployment without committing to SVN
                 required: true
                 default: true
                 type: boolean
@@ -40,21 +50,14 @@ jobs:
                   ref: ${{ inputs.version }}
                   persist-credentials: false
 
-            - name: Validate the tag and existing GitHub Release
+            - name: Validate the tag and release notes
               id: release_metadata
               env:
-                  GH_TOKEN: ${{ github.token }}
                   RELEASE_VERSION: ${{ inputs.version }}
               run: |
                   actual_tag="$(git describe --tags --exact-match)"
                   test "${actual_tag}" = "${RELEASE_VERSION}"
-
-                  is_draft="$(
-                    gh api \
-                      "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}" \
-                      --jq '.draft'
-                  )"
-                  test "${is_draft}" = "false"
+                  test -f ".github/release-notes/${RELEASE_VERSION}.md"
                   echo "commit_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
                   echo "EXPECTED_VERSION=${RELEASE_VERSION}" >> "${GITHUB_ENV}"
 
@@ -104,6 +107,15 @@ jobs:
                   npm run test:slice0:atomic:matrix
                   npm run test:slice0:cimd-outbound-safety:ci
 
+            - name: Resolve the latest WordPress 7.1 patch
+              run: |
+                  echo "WP_ENV_CORE=$(WORDPRESS_BRANCH=7.1 bash tools/resolve-wordpress-core.sh)" >> "${GITHUB_ENV}"
+
+            - name: Verify current WordPress compatibility
+              env:
+                  WP_ENV_PHP_VERSION: '8.4'
+              run: npm run test:integration:ci
+
             - name: Build and inspect reproducible ZIP bytes
               run: npm run artifact:reproducible
 
@@ -131,11 +143,11 @@ jobs:
                   if-no-files-found: error
                   retention-days: 1
 
-    deploy:
-        name: Deploy release ${{ inputs.version }}
+    publish_github:
+        name: Publish GitHub release ${{ inputs.version }}
+        if: ${{ inputs.publish_github }}
         needs: verify
         runs-on: ubuntu-latest
-        environment: wordpress.org
         permissions:
             contents: write
 
@@ -173,15 +185,59 @@ jobs:
                   )"
                   test "${current_tag_commit}" = "${VERIFIED_COMMIT}"
 
-            - name: Upload assets to the existing GitHub Release
-              if: ${{ !inputs.dry_run }}
+            - name: Publish the verified GitHub Release
               uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
               with:
                   tag_name: ${{ inputs.version }}
+                  name: Charter ${{ inputs.version }}
+                  body_path: .github/release-notes/${{ inputs.version }}.md
                   files: |
                       build/charter.zip
                       build/charter.zip.sha256
                   fail_on_unmatched_files: true
+
+    wordpress_org:
+        name: Deploy WordPress.org release ${{ inputs.version }}
+        if: ${{ inputs.deploy_wordpress_org }}
+        needs: verify
+        runs-on: ubuntu-latest
+        environment: wordpress.org
+        permissions:
+            contents: read
+
+        steps:
+            - name: Check out the release tag
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  ref: ${{ needs.verify.outputs.commit_sha }}
+                  persist-credentials: false
+
+            - name: Download the verified release files
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+              with:
+                  name: charter-release-${{ inputs.version }}
+                  path: build
+
+            - name: Verify and extract the transferred ZIP
+              run: |
+                  cd build
+                  sha256sum --check charter.zip.sha256
+                  mkdir -p extracted
+                  unzip -q charter.zip -d extracted
+
+            - name: Revalidate the release tag
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  RELEASE_VERSION: ${{ inputs.version }}
+                  VERIFIED_COMMIT: ${{ needs.verify.outputs.commit_sha }}
+              run: |
+                  test "$(git rev-parse HEAD)" = "${VERIFIED_COMMIT}"
+                  current_tag_commit="$(
+                    gh api \
+                      "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_VERSION}" \
+                      --jq '.sha'
+                  )"
+                  test "${current_tag_commit}" = "${VERIFIED_COMMIT}"
 
             - name: Remove the assets placeholder
               run: rm -f .wordpress-org/.gitkeep
@@ -195,5 +251,5 @@ jobs:
                   VERSION: ${{ inputs.version }}
                   BUILD_DIR: ${{ github.workspace }}/build/extracted/charter
               with:
-                  dry-run: ${{ inputs.dry_run }}
+                  dry-run: ${{ inputs.wordpress_org_dry_run }}
                   generate-zip: false
