@@ -43,19 +43,13 @@ jobs:
               run: |
                   echo "WP_ENV_CORE=$(bash tools/resolve-wordpress-core.sh)" >> "${GITHUB_ENV}"
 
-            - name: Install and activate the ZIP in a clean site
+            - name: Exercise the ZIP lifecycle and run Plugin Check
               env:
                   WP_ENV_PHP_VERSION: '8.4'
               run: npm run artifact:test
 
             - name: Check release inputs and artifact for secret-like content
               run: npm run secret:check
-
-            - name: Run Plugin Check against the extracted artifact
-              uses: WordPress/plugin-check-action@98a1788320d0add90df2d8183934ecccbc4e05d2 # v1.1.7
-              with:
-                  build-dir: build/extracted/charter
-                  slug: charter
 
             - name: Upload the verified artifact
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
