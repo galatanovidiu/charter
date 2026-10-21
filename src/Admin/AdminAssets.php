@@ -37,7 +37,7 @@ final class AdminAssets {
 			return;
 		}
 		foreach ( $asset['dependencies'] as $dependency ) {
-			if ( ! is_string( $dependency ) ) {
+			if ( ! is_string( $dependency ) || '' === $dependency ) {
 				return;
 			}
 		}
