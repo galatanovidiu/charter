@@ -310,11 +310,26 @@ assert_lane_capabilities() {
 assert_fixture_listeners() {
 	"${timeout_command}" --signal=TERM --kill-after=2 30 docker compose \
 		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
+		$deadline = microtime( true ) + 20;
+		$connect = static function ( string $target, $context = null ) use ( $deadline ) {
+			do {
+				$socket = is_resource( $context )
+					? @stream_socket_client( $target, $number, $message, 1, STREAM_CLIENT_CONNECT, $context )
+					: @stream_socket_client( $target, $number, $message, 1 );
+				if ( false !== $socket ) {
+					return $socket;
+				}
+				usleep( 100000 );
+			} while ( microtime( true ) < $deadline );
+
+			return false;
+		};
+
 		$plainTargets = array(
 			"tcp://198.17.0.53:53", "tcp://198.17.0.40:8080", "tcp://198.17.0.41:1080"
 		);
 		foreach ( $plainTargets as $target ) {
-			$socket = @stream_socket_client( $target, $number, $message, 2 );
+			$socket = $connect( $target );
 			if ( false === $socket ) { exit( 1 ); }
 			fclose( $socket );
 		}
@@ -343,13 +358,19 @@ assert_fixture_listeners() {
 			. "User-Agent: Charter-P3-Probe/1\r\n"
 			. "Connection: close\r\n\r\n";
 		foreach ( $tlsTargets as $target ) {
-			$socket = @stream_socket_client( $target, $number, $message, 2, STREAM_CLIENT_CONNECT, $context );
-			if ( false === $socket ) { exit( 1 ); }
-			stream_set_timeout( $socket, 2 );
-			if ( strlen( $request ) !== @fwrite( $socket, $request ) ) { fclose( $socket ); exit( 1 ); }
-			$response = @fread( $socket, 128 );
-			fclose( $socket );
-			if ( ! is_string( $response ) || ! str_starts_with( $response, "HTTP/1.1 200 " ) ) { exit( 1 ); }
+			$ready = false;
+			do {
+				$socket = $connect( $target, $context );
+				if ( false === $socket ) { break; }
+				stream_set_timeout( $socket, 1 );
+				if ( strlen( $request ) === @fwrite( $socket, $request ) ) {
+					$response = @fread( $socket, 128 );
+					$ready = is_string( $response ) && str_starts_with( $response, "HTTP/1.1 200 " );
+				}
+				fclose( $socket );
+				if ( ! $ready ) { usleep( 100000 ); }
+			} while ( microtime( true ) < $deadline );
+			if ( ! $ready ) { exit( 1 ); }
 		}
 
 		$observed = false;
