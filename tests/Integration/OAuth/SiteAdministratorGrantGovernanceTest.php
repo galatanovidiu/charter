@@ -343,6 +343,7 @@ final class SiteAdministratorGrantGovernanceTest extends WP_UnitTestCase {
 				'client_id'     => $clientId,
 				'code'          => $parameters['code'],
 				'code_verifier' => self::VERIFIER,
+				'redirect_uri'  => self::REDIRECT,
 			)
 		);
 		$grants = $plugin->credentials()->listActiveGrantsForUser( $this->issuer, $userId );

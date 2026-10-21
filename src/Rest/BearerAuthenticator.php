@@ -14,6 +14,10 @@ use GalatanOvidiu\Charter\OAuth\AccessPolicyProvider;
 use GalatanOvidiu\Charter\OAuth\AccessTokenContext;
 use GalatanOvidiu\Charter\OAuth\ProtocolException;
 use GalatanOvidiu\Charter\OAuth\TokenService;
+use GalatanOvidiu\Charter\Security\AuditLog;
+use GalatanOvidiu\Charter\Security\RateLimitDecision;
+use GalatanOvidiu\Charter\Security\RateLimiter;
+use GalatanOvidiu\Charter\Security\SourceAddress;
 use GalatanOvidiu\Charter\Site\SiteState;
 use SplObjectStorage;
 use WeakMap;
@@ -28,6 +32,9 @@ use WP_REST_Server;
  * @since 0.1.0
  */
 final class BearerAuthenticator {
+	private const DEFAULT_RATE_POLICY = array(
+		'invalid_bearer_network' => 60,
+	);
 
 	private const MISSING_CREDENTIAL = 'charter_oauth_required';
 	private const MODE_BEARER        = 'bearer';
@@ -51,7 +58,7 @@ final class BearerAuthenticator {
 	/**
 	 * Errors owned by this boundary and eligible for challenge projection.
 	 *
-	 * @var SplObjectStorage<WP_Error, array{error: string|null, description: string, status: int, scopes: array<string>, resource_metadata: string|null}>
+	 * @var SplObjectStorage<WP_Error, array{error: string|null, description: string, status: int, scopes: array<string>, resource_metadata: string|null, retry_after: int|null}>
 	 */
 	private SplObjectStorage $errors;
 
@@ -63,6 +70,20 @@ final class BearerAuthenticator {
 	private ?AccessTokenContext $currentContext = null;
 
 	/**
+	 * Atomic issuer-local abuse counters.
+	 *
+	 * @var RateLimiter
+	 */
+	private readonly RateLimiter $rateLimiter;
+
+	/**
+	 * Secret-free security event ledger.
+	 *
+	 * @var AuditLog
+	 */
+	private readonly AuditLog $audit;
+
+	/**
 	 * Creates the REST boundary.
 	 *
 	 * @since 0.1.0
@@ -70,15 +91,21 @@ final class BearerAuthenticator {
 	 * @param SiteState            $siteState Site lifecycle and identity.
 	 * @param TokenService         $tokens    Access-token validator.
 	 * @param AccessPolicyProvider $accessPolicy Active exact resource and scope registrations.
+	 * @param RateLimiter|null     $rateLimiter Optional shared abuse counter.
+	 * @param AuditLog|null        $audit Optional shared security ledger.
 	 */
 	public function __construct(
 		private readonly SiteState $siteState,
 		private readonly TokenService $tokens,
-		private readonly AccessPolicyProvider $accessPolicy
+		private readonly AccessPolicyProvider $accessPolicy,
+		?RateLimiter $rateLimiter = null,
+		?AuditLog $audit = null
 	) {
 		$this->frames       = new WeakMap();
 		$this->requestModes = new WeakMap();
 		$this->errors       = new SplObjectStorage();
+		$this->rateLimiter  = $rateLimiter ?? new RateLimiter();
+		$this->audit        = $audit ?? new AuditLog();
 	}
 
 	/**
@@ -142,15 +169,25 @@ final class BearerAuthenticator {
 			return $this->error( 'invalid_request', 'invalid_request', 'Use either WordPress authentication or Bearer authentication, not both.', 400, array(), $this->resourceMetadata( $assignment, $request ) );
 		}
 
-		if ( 1 !== preg_match( '/^Bearer ([A-Za-z0-9_-]{20,256})$/Di', $authorizationHeader, $matches ) ) {
-			$this->requestModes[ $request ] = self::MODE_REJECTED;
-			return $this->error( 'invalid_request', 'invalid_request', 'The request uses invalid Bearer transport.', 400, array(), $this->resourceMetadata( $assignment, $request ) );
-		}
-
 		$identity = $this->siteState->identity();
 		if ( null === $identity ) {
 			$this->requestModes[ $request ] = self::MODE_REJECTED;
 			return $this->error( 'invalid_token', 'invalid_token', 'The access token is invalid.', 401, array(), null );
+		}
+		$failureSubject = SourceAddress::current();
+		try {
+			$failureDecision = $this->beginBearerAttempt( $identity->issuer(), $failureSubject );
+		} catch ( ProtocolException $exception ) {
+			$this->requestModes[ $request ] = self::MODE_REJECTED;
+			return $this->error( $exception->error(), $exception->error(), $exception->getMessage(), $exception->status(), array(), $this->resourceMetadata( $assignment, $request ), $exception->retryAfter() );
+		}
+
+		if ( 1 !== preg_match( '/^Bearer ([A-Za-z0-9_-]{20,256})$/Di', $authorizationHeader, $matches ) ) {
+			$this->requestModes[ $request ] = self::MODE_REJECTED;
+			if ( ! $failureDecision->allowed() ) {
+				return $this->rateLimitError( $identity->issuer(), $failureSubject, $failureDecision, $this->resourceMetadata( $assignment, $request ) );
+			}
+			return $this->error( 'invalid_request', 'invalid_request', 'The request uses invalid Bearer transport.', 400, array(), $this->resourceMetadata( $assignment, $request ) );
 		}
 
 		try {
@@ -160,16 +197,24 @@ final class BearerAuthenticator {
 				$assignment->requiredScopes()
 			);
 		} catch ( ProtocolException $exception ) {
+			if ( 'insufficient_scope' === $exception->error() ) {
+				$this->rateLimiter->relieve( $identity->issuer(), 'invalid_bearer_network', $failureSubject );
+			}
 			$this->requestModes[ $request ] = self::MODE_REJECTED;
+			if ( 'insufficient_scope' !== $exception->error() && ! $failureDecision->allowed() ) {
+				return $this->rateLimitError( $identity->issuer(), $failureSubject, $failureDecision, $this->resourceMetadata( $assignment, $request ) );
+			}
 			return $this->error(
 				$exception->error(),
 				$exception->error(),
 				$exception->getMessage(),
 				$exception->status(),
 				'insufficient_scope' === $exception->error() ? $assignment->requiredScopes() : array(),
-				$this->resourceMetadata( $assignment, $request )
+				$this->resourceMetadata( $assignment, $request ),
+				$exception->retryAfter()
 			);
 		}
+		$this->rateLimiter->relieve( $identity->issuer(), 'invalid_bearer_network', $failureSubject );
 
 		$this->frames[ $request ]       = array(
 			'prior_user_id' => get_current_user_id(),
@@ -209,6 +254,9 @@ final class BearerAuthenticator {
 		);
 		$projected = new WP_REST_Response( $body, $details['status'] );
 		$projected->header( 'WWW-Authenticate', self::challenge( $details['error'], $details['scopes'], $details['resource_metadata'] ) );
+		if ( is_int( $details['retry_after'] ) ) {
+			$projected->header( 'Retry-After', (string) max( 1, $details['retry_after'] ) );
+		}
 
 		return $projected;
 	}
@@ -308,8 +356,9 @@ final class BearerAuthenticator {
 	 * @param int           $status      HTTP status.
 	 * @param array<string> $scopes      Challenge scopes.
 	 * @param string|null   $resourceMetadata Exact RFC 9728 metadata URL when challenge-safe.
+	 * @param int|null      $retryAfter Bounded retry delay.
 	 */
-	private function error( string $code, ?string $oauthError, string $description, int $status, array $scopes, ?string $resourceMetadata ): WP_Error {
+	private function error( string $code, ?string $oauthError, string $description, int $status, array $scopes, ?string $resourceMetadata, ?int $retryAfter = null ): WP_Error {
 		$error                  = new WP_Error( $code, $description, array( 'status' => $status ) );
 		$this->errors[ $error ] = array(
 			'error'             => $oauthError,
@@ -317,9 +366,44 @@ final class BearerAuthenticator {
 			'status'            => $status,
 			'scopes'            => $scopes,
 			'resource_metadata' => $resourceMetadata,
+			'retry_after'       => $retryAfter,
 		);
 
 		return $error;
+	}
+
+	/**
+	 * Consumes one failure-sensitive Bearer attempt before credential lookup.
+	 *
+	 * @param string $issuer Exact issuer.
+	 * @param string $source Exact source subject to relieve after successful validation.
+	 * @return RateLimitDecision Current reservation decision. A denied reservation still validates a syntactically valid token so valid traffic is never rejected by this failure budget.
+	 * @throws ProtocolException When the limiter policy is unavailable.
+	 */
+	private function beginBearerAttempt( string $issuer, string $source ): RateLimitDecision {
+		$policy = apply_filters( 'charter_oauth_rate_limit_policy', self::DEFAULT_RATE_POLICY, $issuer ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Public advanced operator policy hook.
+		$limit  = is_array( $policy ) ? ( $policy['invalid_bearer_network'] ?? null ) : null;
+		if ( ! is_int( $limit ) || 1 > $limit ) {
+			throw new ProtocolException( 'temporarily_unavailable', 'The credential processing policy is unavailable.', 503 );
+		}
+
+		return $this->rateLimiter->consumeWithBackoff( $issuer, 'invalid_bearer_network', $source, $limit, MINUTE_IN_SECONDS, MINUTE_IN_SECONDS, time() );
+	}
+
+	/**
+	 * Projects one denied invalid-Bearer reservation and records its first escalation.
+	 *
+	 * @param string            $issuer Exact issuer.
+	 * @param string            $source Exact normalized source.
+	 * @param RateLimitDecision $decision Denied limiter decision.
+	 * @param string|null       $resourceMetadata Exact protected-resource metadata URL.
+	 */
+	private function rateLimitError( string $issuer, string $source, RateLimitDecision $decision, ?string $resourceMetadata ): WP_Error {
+		if ( $decision->count() === $decision->limit() + 1 ) {
+			$this->audit->record( $issuer, 'rate_limit_escalated', 'blocked', 'invalid_bearer_network', null, null, null, $source, time() );
+		}
+
+		return $this->error( 'temporarily_unavailable', 'temporarily_unavailable', 'Too many credential requests.', 429, array(), $resourceMetadata, $decision->retryAfter() );
 	}
 
 	/**

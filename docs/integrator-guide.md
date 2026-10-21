@@ -19,6 +19,7 @@ Charter supports Authorization Code with mandatory PKCE S256.
 - Confidential clients use `client_secret_post` and receive a secret once.
 - HTTP Basic client authentication is not supported.
 - Exact redirect matching is required. HTTP local callbacks may use exact `localhost`, `127.0.0.1`, or `[::1]` hosts, and may vary only the runtime port.
+- Authorization-code token requests must repeat the exact `redirect_uri` used at the authorization endpoint.
 - Access tokens are opaque and valid for one hour.
 - Authorization codes are single-use and valid for five minutes.
 - Continuing access uses rotating refresh tokens with replay-family containment, a 90-day inactivity limit, and a one-year absolute grant limit.

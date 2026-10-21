@@ -934,7 +934,7 @@ final class ProcessWorkerScenario {
 	 */
 	private static function checks( bool $response, bool $validation, bool $callbacks, bool $identity, bool $context ): array {
 		return array(
-			'wordpress_6_9_5'        => '6.9.5' === ( $GLOBALS['wp_version'] ?? null ),
+			'wordpress_6_9'          => FixtureContract::isSupportedWordPressVersion( $GLOBALS['wp_version'] ?? null ),
 			'expected_response'      => $response,
 			'validation_count_exact' => $validation,
 			'callbacks_exact'        => $callbacks,

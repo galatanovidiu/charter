@@ -91,6 +91,9 @@ final class RevocationController {
 				),
 				$exception->status()
 			);
+			if ( is_int( $exception->retryAfter() ) ) {
+				$response->header( 'Retry-After', (string) max( 1, $exception->retryAfter() ) );
+			}
 		}
 
 		$response->header( 'Cache-Control', 'no-store' );

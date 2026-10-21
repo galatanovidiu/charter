@@ -14,7 +14,9 @@ Use an HTTPS WordPress site whose Home URL and Site URL resolve to the same bare
 2. Install `charter.zip` through **Plugins > Add New Plugin** or your normal managed-plugin process.
 3. Activate Charter.
 4. Open **Settings > Charter OAuth** and confirm that the expected site state and issuer are shown.
-5. Check **Tools > Site Health** for Charter cleanup or signing-key warnings.
+5. Check **Tools > Site Health** for Charter cleanup, signing-key, proxy-trust, or insecure-development warnings.
+
+If WordPress is behind a reverse proxy or CDN, define `CHARTER_TRUSTED_PROXIES` as an array of exact proxy IP addresses or CIDR networks. Charter trusts forwarded public-origin and client-address headers only when the immediate peer matches this list. Without that configuration, forwarded headers are ignored and users behind the same proxy can conservatively share one abuse-control bucket.
 
 Upgrading the plugin preserves site state, client registrations, grants, audit history, and credentials. Deactivation also preserves all Charter data.
 

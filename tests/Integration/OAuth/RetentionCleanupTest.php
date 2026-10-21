@@ -76,7 +76,9 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 		$plugin = Plugin::boot();
 		$plugin->credentials()->deleteAll();
 		$plugin->clients()->deleteAll();
+		$plugin->clientMetadataSnapshots()->deleteAll();
 		$plugin->audit()->deleteAll();
+		$plugin->rateLimiter()->deleteAll();
 		$plugin->cleanup()->deleteStatus();
 		$plugin->siteState()->delete();
 		wp_set_current_user( 0 );
@@ -96,7 +98,10 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 				'access_tokens'   => 1,
 				'refresh_tokens'  => 2,
 				'dynamic_clients' => 2,
-				'grants'          => 1,
+				'cimd_clients'    => 2,
+				'cimd_snapshots'  => 1,
+				'rate_limits'     => 1,
+				'grants'          => 2,
 				'audit_events'    => 1,
 			),
 			$result->deleted()
@@ -116,8 +121,17 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 		self::assertSame( 1, $this->countClient( 'dynamic-unused-recent' ) );
 		self::assertSame( 0, $this->countClient( 'dynamic-inactive-old' ) );
 		self::assertSame( 1, $this->countClient( 'dynamic-active-grant' ) );
+		self::assertSame( 0, $this->countClient( 'cimd-unused-old' ) );
+		self::assertSame( 1, $this->countClient( 'cimd-unused-recent' ) );
+		self::assertSame( 0, $this->countClient( 'cimd-inactive-old' ) );
+		self::assertSame( 1, $this->countClient( 'cimd-active-grant' ) );
+		self::assertSame( 0, $this->countSnapshot( 'https://expired-metadata.example.test/client.json' ) );
+		self::assertSame( 1, $this->countSnapshot( 'https://fresh-metadata.example.test/client.json' ) );
+		self::assertSame( 0, $this->countRateLimit( 'expired-rate' ) );
+		self::assertSame( 1, $this->countRateLimit( 'current-rate' ) );
 		self::assertSame( 0, $this->countGrantReason( 'fixture_terminal_old' ) );
 		self::assertSame( 1, $this->countGrantReason( 'fixture_terminal_recent' ) );
+		self::assertSame( 0, $this->countGrantClient( 'non-continuing-old' ) );
 		self::assertSame( 0, $this->countAuditReason( 'fixture_old' ) );
 		self::assertSame( 1, $this->countAuditReason( 'fixture_recent' ) );
 
@@ -156,6 +170,26 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 		self::assertSame( 1, $this->countAuditReason( 'cleanup_scheduling' ) );
 		$tests = apply_filters( 'site_status_tests', array() ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Exercises the Core Site Health registry.
 		self::assertIsArray( $tests['direct']['charter_oauth_cleanup'] ?? null );
+	}
+
+	/** Expired abuse counters use an independent bounded cleanup capacity. */
+	public function testExpiredRateLimitsDoNotConsumeOAuthRetentionCapacity(): void {
+		$timestamp = time();
+		$this->insertOldTransactions( $timestamp, 1 );
+		( new TransactionManager() )->run(
+			function ( mysqli $database ) use ( $timestamp ): void {
+				for ( $index = 1; $index <= 3; ++$index ) {
+					$this->insertRateLimit( $database, 'expired-rate-batch-' . $index, $timestamp - 1 );
+				}
+			}
+		);
+
+		$result = Plugin::boot()->cleanup()->execute( $timestamp, 1 );
+
+		self::assertSame( 3, $result->deleted()['rate_limits'] );
+		self::assertSame( 1, $result->deleted()['transactions'] );
+		self::assertSame( 4, $result->totalDeleted() );
+		self::assertFalse( $result->hasMore() );
 	}
 
 	/** Proves retained expired credentials fail before any cleanup is run. */
@@ -270,14 +304,24 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 				$this->insertCredential( $database, 'fixture_refresh_revoked_recent', CredentialStore::REFRESH_TOKEN, $timestamp - 40 * DAY_IN_SECONDS, $timestamp - 29 * DAY_IN_SECONDS, $revokedNew );
 				$this->insertCredential( $database, 'fixture_refresh_expired_old', CredentialStore::REFRESH_TOKEN, $timestamp - 40 * DAY_IN_SECONDS, null, $expiredOld );
 
-				$this->insertClient( $database, 'dynamic-unused-old', $timestamp - 8 * DAY_IN_SECONDS, $timestamp - 8 * DAY_IN_SECONDS, null );
-				$this->insertClient( $database, 'dynamic-unused-recent', $timestamp - 6 * DAY_IN_SECONDS, $timestamp - 6 * DAY_IN_SECONDS, null );
-				$this->insertClient( $database, 'dynamic-inactive-old', $timestamp - 100 * DAY_IN_SECONDS, $timestamp - 91 * DAY_IN_SECONDS, $timestamp - 99 * DAY_IN_SECONDS );
-				$this->insertClient( $database, 'dynamic-active-grant', $timestamp - 100 * DAY_IN_SECONDS, $timestamp - 91 * DAY_IN_SECONDS, $timestamp - 99 * DAY_IN_SECONDS );
-				$this->insertGrant( $database, 'dynamic-active-grant', 'active', false, null, null, null );
+				$this->insertClient( $database, 'dynamic-unused-old', $timestamp - 8 * DAY_IN_SECONDS, $timestamp - 8 * DAY_IN_SECONDS, null, 'dynamic' );
+				$this->insertClient( $database, 'dynamic-unused-recent', $timestamp - 6 * DAY_IN_SECONDS, $timestamp - 6 * DAY_IN_SECONDS, null, 'dynamic' );
+				$this->insertClient( $database, 'dynamic-inactive-old', $timestamp - 100 * DAY_IN_SECONDS, $timestamp - 91 * DAY_IN_SECONDS, $timestamp - 99 * DAY_IN_SECONDS, 'dynamic' );
+				$this->insertClient( $database, 'dynamic-active-grant', $timestamp - 100 * DAY_IN_SECONDS, $timestamp - 91 * DAY_IN_SECONDS, $timestamp - 99 * DAY_IN_SECONDS, 'dynamic' );
+				$this->insertGrant( $database, 'dynamic-active-grant', 'active', false, null, null, null, $timestamp );
+				$this->insertClient( $database, 'cimd-unused-old', $timestamp - 8 * DAY_IN_SECONDS, $timestamp - 8 * DAY_IN_SECONDS, null, 'cimd' );
+				$this->insertClient( $database, 'cimd-unused-recent', $timestamp - 6 * DAY_IN_SECONDS, $timestamp - 6 * DAY_IN_SECONDS, null, 'cimd' );
+				$this->insertClient( $database, 'cimd-inactive-old', $timestamp - 100 * DAY_IN_SECONDS, $timestamp - 91 * DAY_IN_SECONDS, $timestamp - 99 * DAY_IN_SECONDS, 'cimd' );
+				$this->insertClient( $database, 'cimd-active-grant', $timestamp - 100 * DAY_IN_SECONDS, $timestamp - 91 * DAY_IN_SECONDS, $timestamp - 99 * DAY_IN_SECONDS, 'cimd' );
+				$this->insertGrant( $database, 'cimd-active-grant', 'active', false, null, null, null, $timestamp );
+				$this->insertSnapshot( $database, 'https://expired-metadata.example.test/client.json', $timestamp - HOUR_IN_SECONDS );
+				$this->insertSnapshot( $database, 'https://fresh-metadata.example.test/client.json', $timestamp + HOUR_IN_SECONDS );
+				$this->insertRateLimit( $database, 'expired-rate', $timestamp - 1 );
+				$this->insertRateLimit( $database, 'current-rate', $timestamp + HOUR_IN_SECONDS );
 
 				$this->insertGrant( $database, 'terminal-old', 'revoked', false, $timestamp - 91 * DAY_IN_SECONDS, null, 'fixture_terminal_old' );
 				$this->insertGrant( $database, 'terminal-recent', 'revoked', false, $timestamp - 89 * DAY_IN_SECONDS, null, 'fixture_terminal_recent' );
+				$this->insertGrant( $database, 'non-continuing-old', 'active', false, null, null, null );
 				$this->insertAudit( $database, 'fixture_old', $timestamp - 91 * DAY_IN_SECONDS );
 				$this->insertAudit( $database, 'fixture_recent', $timestamp - 89 * DAY_IN_SECONDS );
 			}
@@ -318,16 +362,18 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 	 * @param int|null    $revokedAt Optional terminal timestamp.
 	 * @param int|null    $refreshExpiresAt Optional refresh expiry.
 	 * @param string|null $reason Optional terminal reason.
+	 * @param int|null    $lastUsedAt Optional last-use timestamp.
 	 * @throws RuntimeException When fixture insertion fails.
 	 */
-	private function insertGrant( mysqli $database, string $clientId, string $status, bool $continuingAccess, ?int $revokedAt, ?int $refreshExpiresAt, ?string $reason ): int {
+	private function insertGrant( mysqli $database, string $clientId, string $status, bool $continuingAccess, ?int $revokedAt, ?int $refreshExpiresAt, ?string $reason, ?int $lastUsedAt = null ): int {
 		$table      = self::quotedTable( Schema::grantTable() );
 		$authorized = time() - 120 * DAY_IN_SECONDS;
+		$lastUsed   = $lastUsedAt ?? $authorized;
 		$result     = $database->execute_query(
 			"INSERT INTO {$table}
 			(issuer,resource,client_id,client_digest,redirect_uri,user_id,scope,continuing_access,status,authorized_at,last_used_at,refresh_absolute_expires_at,refresh_inactivity_expires_at,client_metadata_fingerprint,revoked_at,revocation_reason)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			array( $this->issuer, $this->issuer, $clientId, self::clientDigest( $this->issuer, $clientId ), self::REDIRECT, 1, AuthorizationService::GENERAL_SCOPE, $continuingAccess ? 1 : 0, $status, $authorized, $authorized, $refreshExpiresAt, $refreshExpiresAt, '', $revokedAt, $reason )
+			array( $this->issuer, $this->issuer, $clientId, self::clientDigest( $this->issuer, $clientId ), self::REDIRECT, 1, AuthorizationService::GENERAL_SCOPE, $continuingAccess ? 1 : 0, $status, $authorized, $lastUsed, $refreshExpiresAt, $refreshExpiresAt, '', $revokedAt, $reason )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Test fixtures use the production-owned transaction boundary.
 		if ( true !== $result || $database->insert_id <= 0 ) {
 			throw new RuntimeException( 'charter_cleanup_fixture_grant_failed' );
@@ -344,18 +390,57 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 	 * @param int      $createdAt Creation timestamp.
 	 * @param int      $lastActivityAt Activity timestamp.
 	 * @param int|null $authorizedAt Optional first authorization timestamp.
+	 * @param string   $source Registration source.
 	 * @throws RuntimeException When fixture insertion fails.
 	 */
-	private function insertClient( mysqli $database, string $clientId, int $createdAt, int $lastActivityAt, ?int $authorizedAt ): void {
+	private function insertClient( mysqli $database, string $clientId, int $createdAt, int $lastActivityAt, ?int $authorizedAt, string $source ): void {
 		$table  = self::quotedTable( Schema::clientTable() );
 		$result = $database->execute_query(
 			"INSERT INTO {$table}
 			(issuer_digest,client_digest,issuer,client_id,client_name,redirect_uris,status,source,token_endpoint_auth_method,grant_types,client_secret_hash,metadata_fingerprint,created_at,last_activity_at,authorized_at,blocked_at,deleted_at)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			array( self::issuerDigest( $this->issuer ), self::clientDigest( $this->issuer, $clientId ), $this->issuer, $clientId, 'Retention fixture', wp_json_encode( array( self::REDIRECT ) ), 'active', 'dynamic', 'none', 'authorization_code', null, '', $createdAt, $lastActivityAt, $authorizedAt, null, null )
+			array( self::issuerDigest( $this->issuer ), self::clientDigest( $this->issuer, $clientId ), $this->issuer, $clientId, 'Retention fixture', wp_json_encode( array( self::REDIRECT ) ), 'active', $source, 'none', 'authorization_code', null, '', $createdAt, $lastActivityAt, $authorizedAt, null, null )
 		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Test fixtures use the production-owned transaction boundary.
 		if ( true !== $result ) {
 			throw new RuntimeException( 'charter_cleanup_fixture_client_failed' );
+		}
+	}
+
+	/**
+	 * Inserts one reusable CIMD snapshot fixture.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param string $clientId Exact client identifier.
+	 * @param int    $freshUntil Exclusive freshness boundary.
+	 * @throws RuntimeException When fixture insertion fails.
+	 */
+	private function insertSnapshot( mysqli $database, string $clientId, int $freshUntil ): void {
+		$table  = self::quotedTable( Schema::clientMetadataTable() );
+		$result = $database->execute_query(
+			"INSERT INTO {$table} (issuer_digest,client_digest,issuer,client_id,client_name,redirect_uris,grant_types,metadata_fingerprint,fetched_at,fresh_until) VALUES (?,?,?,?,?,?,?,?,?,?)",
+			array( self::issuerDigest( $this->issuer ), self::clientDigest( $this->issuer, $clientId ), $this->issuer, $clientId, 'Snapshot fixture', wp_json_encode( array( self::REDIRECT ) ), 'authorization_code', hash( 'sha256', $clientId ), $freshUntil - HOUR_IN_SECONDS, $freshUntil )
+		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Test fixture uses the production-owned transaction boundary.
+		if ( true !== $result ) {
+			throw new RuntimeException( 'charter_cleanup_fixture_snapshot_failed' );
+		}
+	}
+
+	/**
+	 * Inserts one rate-limit fixture.
+	 *
+	 * @param mysqli $database Owned connection.
+	 * @param string $marker Unique fixture marker.
+	 * @param int    $expiresAt Expiry timestamp.
+	 * @throws RuntimeException When fixture insertion fails.
+	 */
+	private function insertRateLimit( mysqli $database, string $marker, int $expiresAt ): void {
+		$table  = self::quotedTable( Schema::rateLimitTable() );
+		$result = $database->execute_query(
+			"INSERT INTO {$table} (bucket_digest,window_started_at,window_seconds,request_count,expires_at) VALUES (?,?,?,?,?)",
+			array( hash( 'sha256', $marker ), $expiresAt - 600, 600, 1, $expiresAt )
+		); // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli -- Test fixture uses the production-owned transaction boundary.
+		if ( true !== $result ) {
+			throw new RuntimeException( 'charter_cleanup_fixture_rate_failed' );
 		}
 	}
 
@@ -397,12 +482,39 @@ final class RetentionCleanupTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Counts one exact snapshot client identifier.
+	 *
+	 * @param string $clientId Exact client identifier.
+	 */
+	private function countSnapshot( string $clientId ): int {
+		return $this->countValue( Schema::clientMetadataTable(), 'client_id', $clientId );
+	}
+
+	/**
+	 * Counts one exact rate-limit fixture.
+	 *
+	 * @param string $marker Unique fixture marker.
+	 */
+	private function countRateLimit( string $marker ): int {
+		return $this->countValue( Schema::rateLimitTable(), 'bucket_digest', hash( 'sha256', $marker ) );
+	}
+
+	/**
 	 * Counts one exact retained grant reason.
 	 *
 	 * @param string $reason Stable reason.
 	 */
 	private function countGrantReason( string $reason ): int {
 		return $this->countValue( Schema::grantTable(), 'revocation_reason', $reason );
+	}
+
+	/**
+	 * Returns the count for one exact grant client identifier.
+	 *
+	 * @param string $clientId Exact client identifier.
+	 */
+	private function countGrantClient( string $clientId ): int {
+		return $this->countValue( Schema::grantTable(), 'client_id', $clientId );
 	}
 
 	/**

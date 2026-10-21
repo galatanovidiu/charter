@@ -156,6 +156,10 @@ final class ClientMetadataSnapshotStore {
 				return null;
 			}
 		}
+		$name = ClientDisplayName::normalize( $row['client_name'] );
+		if ( null === $name ) {
+			return null;
+		}
 		try {
 			$redirects = json_decode( $row['redirect_uris'], true, 8, JSON_THROW_ON_ERROR );
 		} catch ( JsonException ) {
@@ -176,7 +180,7 @@ final class ClientMetadataSnapshotStore {
 			return null;
 		}
 
-		return new RemoteClientMetadata( $row['client_id'], $row['client_name'], $validatedRedirects, $grants, $row['metadata_fingerprint'] );
+			return new RemoteClientMetadata( $row['client_id'], $name, $validatedRedirects, $grants, $row['metadata_fingerprint'] );
 	}
 
 	/**

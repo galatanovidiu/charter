@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace GalatanOvidiu\Charter\Tests\Integration\OAuth;
 
+use GalatanOvidiu\Charter\Http\AuthorizationController;
 use GalatanOvidiu\Charter\OAuth\AuthorizationService;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataDocumentValidator;
 use GalatanOvidiu\Charter\OAuth\ClientMetadataIdentifier;
@@ -21,6 +22,7 @@ use GalatanOvidiu\Charter\OAuth\TokenService;
 use GalatanOvidiu\Charter\Plugin;
 use GalatanOvidiu\Charter\Schema;
 use InvalidArgumentException;
+use ReflectionMethod;
 use WP_UnitTestCase;
 
 /** Exercises authorization-only CIMD onboarding and local credential independence. */
@@ -249,6 +251,10 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 			'localhost suffix'           => self::metadataBodyWithOverrides( array( 'redirect_uris' => array( 'http://localhost.example/callback' ) ) ),
 			'unsupported response type'  => self::metadataBodyWithOverrides( array( 'response_types' => array( 'token' ) ) ),
 			'unsupported grant type'     => self::metadataBodyWithOverrides( array( 'grant_types' => array( 'authorization_code', 'client_credentials' ) ) ),
+			'C0 display control'         => self::metadataBodyWithOverrides( array( 'client_name' => "Unsafe\nclient" ) ),
+			'C1 display control'         => self::metadataBodyWithOverrides( array( 'client_name' => "Unsafe\u{0085}client" ) ),
+			'bidirectional override'     => self::metadataBodyWithOverrides( array( 'client_name' => "Safe\u{202E}evil" ) ),
+			'line separator'             => self::metadataBodyWithOverrides( array( 'client_name' => "Unsafe\u{2028}client" ) ),
 		);
 		foreach ( $invalidDocuments as $case => $body ) {
 			$rejected = false;
@@ -361,6 +367,178 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 		self::assertSame( 1, $fetcher->fetchCount() );
 	}
 
+	/** Verifies rotating client identifiers cannot bypass the source-address budget. */
+	public function testAuthorizationNetworkLimitSpansDifferentClientIdentifiers(): void {
+		$secondClientId = 'https://metadata.example.test/second-client.json';
+		$fetcher        = new SequenceRemoteJsonFetcher(
+			array(
+				self::response( self::metadataBody( 'First client', array( self::REDIRECT_ONE ) ), array( 'cache-control' => array( 'no-store' ) ) ),
+				self::response( self::metadataBody( 'Second client', array( self::REDIRECT_ONE ), $secondClientId ), array( 'cache-control' => array( 'no-store' ) ) ),
+			),
+			array( self::CLIENT_ID, $secondClientId )
+		);
+		$service        = $this->authorization( $fetcher );
+		$filter         = static fn ( array $policy ): array => array_merge( $policy, array( 'authorization_network' => 1 ) );
+		add_filter( 'charter_oauth_rate_limit_policy', $filter );
+		try {
+			$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false ) );
+			try {
+				$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false, $secondClientId ) );
+				self::fail( 'A different client identifier bypassed the source-address authorization limit.' );
+			} catch ( ProtocolException $exception ) {
+				self::assertSame( 429, $exception->status() );
+				self::assertIsInt( $exception->retryAfter() );
+			}
+		} finally {
+			remove_filter( 'charter_oauth_rate_limit_policy', $filter );
+		}
+		self::assertSame( 1, $fetcher->fetchCount() );
+	}
+
+	/** A source rejected by its own budget cannot exhaust the issuer budget. */
+	public function testRejectedSourceDoesNotConsumeIssuerAuthorizationBudget(): void {
+		$secondClientId = 'https://metadata.example.test/issuer-budget-client.json';
+		$fetcher        = new SequenceRemoteJsonFetcher(
+			array(
+				self::response( self::metadataBody( 'First client', array( self::REDIRECT_ONE ) ), array( 'cache-control' => array( 'no-store' ) ) ),
+				self::response( self::metadataBody( 'Second client', array( self::REDIRECT_ONE ), $secondClientId ), array( 'cache-control' => array( 'no-store' ) ) ),
+			),
+			array( self::CLIENT_ID, $secondClientId )
+		);
+		$service        = $this->authorization( $fetcher );
+		$filter         = static fn ( array $policy ): array => array_merge(
+			$policy,
+			array(
+				'authorization_issuer'  => 2,
+				'authorization_network' => 1,
+			)
+		);
+		add_filter( 'charter_oauth_rate_limit_policy', $filter );
+		try {
+			$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false ) );
+			try {
+				$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false, $secondClientId ) );
+				self::fail( 'The exhausted source authorization budget was not enforced.' );
+			} catch ( ProtocolException $exception ) {
+				self::assertSame( 429, $exception->status() );
+			}
+
+			$_SERVER['REMOTE_ADDR'] = '198.51.100.43';
+			$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false, $secondClientId ) );
+		} finally {
+			remove_filter( 'charter_oauth_rate_limit_policy', $filter );
+		}
+		self::assertSame( 2, $fetcher->fetchCount() );
+	}
+
+	/** A fresh metadata snapshot recreates an independently reclaimed client row. */
+	public function testFreshSnapshotRecreatesMissingCimdRegistration(): void {
+		$fetcher = new SequenceRemoteJsonFetcher(
+			array( self::response( self::metadataBody( 'Cached client', array( self::REDIRECT_ONE ) ), array( 'cache-control' => array( 'max-age=60' ) ) ) )
+		);
+		$service = $this->authorization( $fetcher );
+		$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false ) );
+		Plugin::boot()->clients()->deleteAll();
+
+		$service->validate( self::authorizationParameters( self::REDIRECT_ONE, false ) );
+
+		self::assertSame( 1, $fetcher->fetchCount() );
+		self::assertNotNull( Plugin::boot()->clients()->findActive( $this->issuer, self::CLIENT_ID ) );
+	}
+
+	/** Verifies valid logged-out preflight never resolves remote client metadata. */
+	public function testAuthorizationPreflightDoesNotFetchClientMetadata(): void {
+		$fetcher = new SequenceRemoteJsonFetcher(
+			array( self::response( self::metadataBody( 'Remote client', array( self::REDIRECT_ONE ) ), array() ) )
+		);
+
+		$this->authorization( $fetcher )->preflight( self::authorizationParameters( self::REDIRECT_ONE, false ) );
+
+		self::assertSame( 0, $fetcher->fetchCount() );
+		self::assertNull( Plugin::boot()->clients()->findRegistration( $this->issuer, self::CLIENT_ID ) );
+	}
+
+	/** Verifies malformed local parameters fail before any DNS or HTTP boundary. */
+	public function testMalformedAuthorizationParametersFailBeforeClientMetadataFetch(): void {
+		$fetcher = new SequenceRemoteJsonFetcher(
+			array( self::response( self::metadataBody( 'Remote client', array( self::REDIRECT_ONE ) ), array() ) )
+		);
+		$service = $this->authorization( $fetcher );
+		$valid   = self::authorizationParameters( self::REDIRECT_ONE, false );
+		$cases   = array(
+			'unsupported response type' => array( 'response_type' => 'token' ),
+			'unsupported PKCE method'   => array( 'code_challenge_method' => 'plain' ),
+			'invalid PKCE challenge'    => array( 'code_challenge' => 'short' ),
+			'invalid resource'          => array( 'resource' => 'https://other.example.test' ),
+			'invalid scope'             => array( 'scope' => 'unknown:scope' ),
+		);
+		foreach ( $cases as $case => $overrides ) {
+			try {
+				$service->validate( array_merge( $valid, $overrides ) );
+				self::fail( 'Malformed authorization input reached client metadata resolution: ' . $case );
+			} catch ( ProtocolException $exception ) {
+				self::assertNull( $exception->redirectUri(), $case );
+			}
+		}
+
+		self::assertSame( 0, $fetcher->fetchCount() );
+	}
+
+	/** Verifies first-use dynamic clients cannot turn local errors into redirects. */
+	public function testFirstUseDynamicClientErrorsRemainLocal(): void {
+		$fetcher             = new SequenceRemoteJsonFetcher( array() );
+		$registration        = Plugin::boot()->clients()->registerDynamicClient(
+			$this->issuer,
+			'First-use dynamic client',
+			array( self::REDIRECT_ONE ),
+			'none',
+			false,
+			time()
+		);
+		$parameters          = self::authorizationParameters( self::REDIRECT_ONE, false, $registration['client']->clientId() );
+		$parameters['scope'] = 'unknown:scope';
+
+		try {
+			$this->authorization( $fetcher )->validate( $parameters );
+			self::fail( 'A malformed first-use DCR request was accepted.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'invalid_scope', $exception->error() );
+			self::assertNull( $exception->redirectUri() );
+		}
+	}
+
+	/** Verifies operator-managed clients retain safe OAuth error redirects. */
+	public function testPreRegisteredClientErrorsRetainValidatedRedirect(): void {
+		$fetcher = new SequenceRemoteJsonFetcher( array() );
+		self::assertTrue( Plugin::boot()->clients()->registerPublicClient( $this->issuer, 'operator-client', 'Operator client', array( self::REDIRECT_ONE ) ) );
+		$parameters                  = self::authorizationParameters( self::REDIRECT_ONE, false, 'operator-client' );
+		$parameters['response_type'] = 'token';
+
+		try {
+			$this->authorization( $fetcher )->validate( $parameters );
+			self::fail( 'An unsupported response type was accepted.' );
+		} catch ( ProtocolException $exception ) {
+			self::assertSame( 'unsupported_response_type', $exception->error() );
+			self::assertSame( self::REDIRECT_ONE, $exception->redirectUri() );
+		}
+	}
+
+	/** Verifies CIMD consent exposes authoritative origin separately from its name. */
+	public function testCimdConsentDisplaysClientIdentifierAndRedirectHostsSeparately(): void {
+		$fetcher = new SequenceRemoteJsonFetcher(
+			array( self::response( self::metadataBody( 'Friendly remote name', array( self::REDIRECT_ONE ) ), array( 'cache-control' => array( 'no-store' ) ) ) )
+		);
+		$service = $this->authorization( $fetcher );
+		$request = $service->validate( self::authorizationParameters( self::REDIRECT_ONE, false ) );
+		$method  = new ReflectionMethod( AuthorizationController::class, 'clientIdentifierProvenanceHtml' );
+		$html    = $method->invoke( null, $request );
+		self::assertIsString( $html );
+
+		self::assertStringContainsString( '<dt>Client ID host</dt><dd>metadata.example.test</dd>', $html );
+		self::assertStringNotContainsString( 'Friendly remote name', $html );
+		self::assertStringNotContainsString( 'app.example.test', $html );
+	}
+
 	/**
 	 * Creates an authorization service with production persistence and injected outbound seams.
 	 *
@@ -420,11 +598,12 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 	 *
 	 * @param string $redirectUri Exact redirect URI.
 	 * @param bool   $continuingAccess Whether continuing access is requested.
+	 * @param string $clientId Exact client identifier.
 	 */
-	private static function authorizationParameters( string $redirectUri, bool $continuingAccess ): array {
+	private static function authorizationParameters( string $redirectUri, bool $continuingAccess, string $clientId = self::CLIENT_ID ): array {
 		return array(
 			'response_type'         => 'code',
-			'client_id'             => self::CLIENT_ID,
+			'client_id'             => $clientId,
 			'redirect_uri'          => $redirectUri,
 			'code_challenge'        => TokenService::s256Challenge( self::VERIFIER ),
 			'code_challenge_method' => 'S256',
@@ -438,11 +617,12 @@ final class ClientMetadataLifecycleTest extends WP_UnitTestCase {
 	 *
 	 * @param string $name User-facing client name.
 	 * @param array  $redirectUris Exact redirect URI set.
+	 * @param string $clientId Exact client identifier.
 	 */
-	private static function metadataBody( string $name, array $redirectUris ): string {
+	private static function metadataBody( string $name, array $redirectUris, string $clientId = self::CLIENT_ID ): string {
 		$body = wp_json_encode(
 			array(
-				'client_id'                  => self::CLIENT_ID,
+				'client_id'                  => $clientId,
 				'client_name'                => $name,
 				'redirect_uris'              => $redirectUris,
 				'token_endpoint_auth_method' => 'none',

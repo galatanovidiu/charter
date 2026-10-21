@@ -70,6 +70,7 @@ final class DynamicRegistrationValidator {
 		}
 
 		$name       = $metadata['client_name'] ?? null;
+		$safeName   = is_string( $name ) ? ClientDisplayName::normalize( $name ) : null;
 		$redirects  = $metadata['redirect_uris'] ?? null;
 		$method     = $metadata['token_endpoint_auth_method'] ?? null;
 		$grantTypes = $metadata['grant_types'] ?? array( Client::GRANT_AUTHORIZATION_CODE );
@@ -77,8 +78,7 @@ final class DynamicRegistrationValidator {
 		$grantTypes = self::grantTypes( $grantTypes );
 		if (
 			! is_string( $name )
-			|| '' === trim( $name )
-			|| 256 < strlen( $name )
+			|| null === $safeName
 			|| ! is_array( $redirects )
 			|| ! array_is_list( $redirects )
 			|| array() === $redirects
@@ -90,6 +90,7 @@ final class DynamicRegistrationValidator {
 		) {
 			throw new InvalidArgumentException( 'charter_dcr_metadata_invalid' );
 		}
+		$name = $safeName;
 
 		$unique = array();
 		foreach ( $redirects as $redirect ) {
@@ -100,7 +101,7 @@ final class DynamicRegistrationValidator {
 		}
 
 		return new DynamicRegistrationRequest(
-			trim( $name ),
+			$name,
 			array_keys( $unique ),
 			$method,
 			in_array( Client::GRANT_REFRESH_TOKEN, $grantTypes, true )

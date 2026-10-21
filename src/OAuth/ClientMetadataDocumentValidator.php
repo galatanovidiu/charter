@@ -73,6 +73,7 @@ final class ClientMetadataDocumentValidator {
 
 		$clientId   = $document['client_id'] ?? null;
 		$name       = $document['client_name'] ?? null;
+		$safeName   = is_string( $name ) ? ClientDisplayName::normalize( $name ) : null;
 		$redirects  = $document['redirect_uris'] ?? null;
 		$method     = $document['token_endpoint_auth_method'] ?? null;
 		$grantTypes = self::grantTypes( $document['grant_types'] ?? array( Client::GRANT_AUTHORIZATION_CODE ) );
@@ -81,8 +82,7 @@ final class ClientMetadataDocumentValidator {
 			! is_string( $clientId )
 			|| $identifier->exact() !== $clientId
 			|| ! is_string( $name )
-			|| '' === trim( $name )
-			|| 256 < strlen( $name )
+			|| null === $safeName
 			|| ! is_array( $redirects )
 			|| ! array_is_list( $redirects )
 			|| array() === $redirects
@@ -94,6 +94,7 @@ final class ClientMetadataDocumentValidator {
 		) {
 			throw new InvalidArgumentException( 'charter_cimd_metadata_invalid' );
 		}
+		$name = $safeName;
 
 		$accepted = array();
 		foreach ( $redirects as $redirect ) {

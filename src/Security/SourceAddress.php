@@ -22,21 +22,7 @@ final class SourceAddress {
 	 * @since 0.1.0
 	 */
 	public static function current(): string {
-		$remote = $_SERVER['REMOTE_ADDR'] ?? null; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Raw server transport metadata is parsed strictly as an IP address and never displayed directly.
-		if ( ! is_string( $remote ) ) {
-			return 'unknown';
-		}
-
-		$packed = inet_pton( $remote );
-		if ( false === $packed ) {
-			return 'unknown';
-		}
-		if ( 16 === strlen( $packed ) ) {
-			$packed = substr( $packed, 0, 8 ) . str_repeat( "\0", 8 );
-		}
-
-		$normalized = inet_ntop( $packed );
-		return is_string( $normalized ) ? $normalized : 'unknown';
+		return ( new TrustedProxyPolicy() )->sourceAddress( $_SERVER );
 	}
 
 	/** This class contains static normalization only. */

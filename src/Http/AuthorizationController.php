@@ -88,15 +88,15 @@ final class AuthorizationController {
 	public function handleLoggedOut(): void {
 		try {
 			$parameters = self::authorizationParametersFromQuery();
-			$request    = $this->authorization->validate( $parameters );
-			$identity   = $this->siteState->identity();
+			$this->authorization->preflight( $parameters );
+			$identity = $this->siteState->identity();
 			if ( null === $identity ) {
 				throw new ProtocolException( 'temporarily_unavailable', 'The OAuth issuer is not enabled.', 503 );
 			}
 
 			$loginReturn = AuthorizationService::redirectWithParameters(
 				( new EndpointUrls( $identity->issuer() ) )->authorizationEndpoint(),
-				self::requestParameters( $request )
+				$parameters
 			);
 			wp_safe_redirect( wp_login_url( $loginReturn ) );
 			exit;
@@ -148,13 +148,14 @@ final class AuthorizationController {
 		$redirectHost    = is_string( $redirectHost ) ? $redirectHost : $request->redirectUri();
 		$nonce           = wp_nonce_field( 'charter_oauth_consent:' . $transaction, '_wpnonce', true, false );
 		$scopeHtml       = self::scopeConsentHtml( $request );
+		$provenanceHtml  = self::clientIdentifierProvenanceHtml( $request );
 		$scriptNonce     = bin2hex( random_bytes( 16 ) );
 		$scriptHtml      = self::consentScriptHtml( $scriptNonce );
 		$loopbackWarning = self::hasOnlyLoopbackRedirects( $request )
 			? '<p class="charter-consent__warning"><strong>' . esc_html__( 'Local callback warning:', 'charter' ) . '</strong> ' . esc_html__( 'Another process on your device could impersonate this client and receive the authorization response.', 'charter' ) . '</p>'
 			: '';
 		$html            = self::consentStyleHtml() . sprintf(
-			'<div class="charter-consent"><p class="charter-consent__trust">%1$s</p><div class="charter-consent__body"><h1>%2$s</h1><p class="charter-consent__lead"><strong>%3$s</strong> %4$s</p><dl><dt>%5$s</dt><dd>%6$s</dd><dt>%7$s</dt><dd>%8$s</dd><dt>%9$s</dt><dd>%10$s</dd><dt>%11$s</dt><dd>%12$s</dd></dl><p class="charter-consent__guardrail">%13$s</p>%14$s<form method="post" action="%15$s" data-charter-oauth-consent>%16$s<input type="hidden" name="transaction" value="%17$s"><p class="charter-consent__actions"><button type="submit" name="decision" value="approve" class="button button-primary">%18$s</button><button type="submit" name="decision" value="deny" class="button">%19$s</button></p><p class="charter-consent__status" data-charter-oauth-status role="status" aria-live="polite" hidden>%20$s</p></form></div></div>%21$s',
+			'<div class="charter-consent"><p class="charter-consent__trust">%1$s</p><div class="charter-consent__body"><h1>%2$s</h1><p class="charter-consent__lead"><strong>%3$s</strong> %4$s</p><dl><dt>%5$s</dt><dd>%6$s</dd><dt>%7$s</dt><dd>%8$s</dd>%9$s<dt>%10$s</dt><dd>%11$s</dd><dt>%12$s</dt><dd>%13$s</dd></dl><p class="charter-consent__guardrail">%14$s</p>%15$s<form method="post" action="%16$s" data-charter-oauth-consent>%17$s<input type="hidden" name="transaction" value="%18$s"><p class="charter-consent__actions"><button type="submit" name="decision" value="approve" class="button button-primary">%19$s</button><button type="submit" name="decision" value="deny" class="button">%20$s</button></p><p class="charter-consent__status" data-charter-oauth-status role="status" aria-live="polite" hidden>%21$s</p></form></div></div>%22$s',
 			esc_html__( 'Secure WordPress authorization', 'charter' ),
 			esc_html__( 'Authorize WordPress access', 'charter' ),
 			esc_html( $request->client()->name() ),
@@ -163,6 +164,7 @@ final class AuthorizationController {
 			esc_html( $request->resource() ),
 			esc_html__( 'Requested access', 'charter' ),
 			$scopeHtml,
+			$provenanceHtml,
 			esc_html__( 'Redirect host', 'charter' ),
 			esc_html( $redirectHost ),
 			esc_html__( 'Continuing access', 'charter' ),
@@ -182,6 +184,23 @@ final class AuthorizationController {
 
 		$this->sendHtmlHeaders( $scriptNonce, $request->redirectUri() );
 		wp_die( $html, esc_html__( 'OAuth authorization', 'charter' ), array( 'response' => 200 ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Every dynamic value in the assembled consent HTML is escaped.
+	}
+
+	/**
+	 * Renders authoritative client-identifier provenance separately from its name.
+	 *
+	 * @param AuthorizationRequest $request Validated authorization request.
+	 */
+	private static function clientIdentifierProvenanceHtml( AuthorizationRequest $request ): string {
+		if ( ClientRegistry::SOURCE_CIMD !== $request->client()->source() ) {
+			return '';
+		}
+		$host = wp_parse_url( $request->client()->clientId(), PHP_URL_HOST );
+		if ( ! is_string( $host ) || '' === $host ) {
+			return '';
+		}
+
+		return '<dt>' . esc_html__( 'Client ID host', 'charter' ) . '</dt><dd>' . esc_html( $host ) . '</dd>';
 	}
 
 	/**
@@ -306,8 +325,7 @@ HTML;
 			return false;
 		}
 		foreach ( $request->client()->redirectUris() as $redirectUri ) {
-			$host = wp_parse_url( $redirectUri, PHP_URL_HOST );
-			if ( ! is_string( $host ) || ! in_array( strtolower( trim( $host, '[]' ) ), array( 'localhost', '127.0.0.1', '::1' ), true ) ) {
+			if ( ! \GalatanOvidiu\Charter\OAuth\RedirectUriValidator::isLoopback( $redirectUri ) ) {
 				return false;
 			}
 		}
@@ -442,29 +460,6 @@ HTML;
 		}
 
 		return $parameters;
-	}
-
-	/**
-	 * Recreates validated request parameters for post-login continuation.
-	 *
-	 * @since 0.1.0
-	 *
-	 * @param AuthorizationRequest $request Validated request.
-	 * @return array<string, string|null> Exact request parameters.
-	 */
-	private static function requestParameters( AuthorizationRequest $request ): array {
-		return array(
-			'response_type'         => 'code',
-			'client_id'             => $request->client()->clientId(),
-			'redirect_uri'          => $request->redirectUri(),
-			'code_challenge'        => $request->codeChallenge(),
-			'code_challenge_method' => 'S256',
-			'resource'              => $request->resource(),
-			'scope'                 => $request->continuingAccessRequested()
-				? $request->scope() . ' ' . AuthorizationService::OFFLINE_ACCESS_SCOPE
-				: $request->scope(),
-			'state'                 => $request->state(),
-		);
 	}
 
 	/**
