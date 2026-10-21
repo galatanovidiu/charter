@@ -115,6 +115,57 @@ function archiveEntrySegments( string $entry ): array {
 	return $segments;
 }
 
+/**
+ * Reports whether one canonical relative entry belongs in production.
+ *
+ * @param string $relativePath Path below the charter archive root.
+ * @param bool   $isDirectory Whether the entry is a directory.
+ */
+function isAllowedProductionEntry( string $relativePath, bool $isDirectory ): bool {
+	if ( '' === $relativePath ) {
+		return $isDirectory;
+	}
+
+	$segments = explode( '/', $relativePath );
+	foreach ( $segments as $segment ) {
+		if ( str_starts_with( $segment, '.' ) ) {
+			return false;
+		}
+	}
+
+	if ( $isDirectory ) {
+		return in_array( $relativePath, array( 'assets', 'assets/admin', 'assets/css', 'assets/js', 'languages', 'src' ), true )
+			|| str_starts_with( $relativePath, 'src/' );
+	}
+
+	if ( str_starts_with( $relativePath, 'src/' ) ) {
+		return str_ends_with( $relativePath, '.php' );
+	}
+
+	if ( 1 === preg_match( '/^languages\/[^\/]+\.(?:json|mo|po|pot)$/D', $relativePath ) ) {
+		return true;
+	}
+
+	return in_array(
+		$relativePath,
+		array(
+			'LICENSE',
+			'charter.php',
+			'readme.txt',
+			'uninstall.php',
+			'assets/admin/connected-apps.asset.php',
+			'assets/admin/connected-apps.js',
+			'assets/admin/network-admin.asset.php',
+			'assets/admin/network-admin.js',
+			'assets/admin/site-admin.asset.php',
+			'assets/admin/site-admin.js',
+			'assets/css/admin.css',
+			'assets/js/oauth-consent.js',
+		),
+		true
+	);
+}
+
 $archivePath = $argv[1] ?? '';
 
 if ( '' === $archivePath || ! is_file( $archivePath ) ) {
@@ -191,6 +242,11 @@ for ( $index = 0; $index < $archive->numFiles; ++$index ) {
 
 	$relativeSegments = array_slice( $segments, 1 );
 	$relativePath     = implode( '/', $relativeSegments );
+	$isDirectory      = str_ends_with( $entry, '/' );
+
+	if ( ! isAllowedProductionEntry( $relativePath, $isDirectory ) ) {
+		fail( "ZIP entry is not part of the production allowlist: {$entry}" );
+	}
 
 	foreach ( $relativeSegments as $segment ) {
 		if ( str_starts_with( $segment, '.git' ) ) {
