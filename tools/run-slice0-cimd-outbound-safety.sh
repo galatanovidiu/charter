@@ -369,7 +369,7 @@ assert_fixture_listeners() {
 				}
 				fclose( $socket );
 				if ( ! $ready ) { usleep( 100000 ); }
-			} while ( microtime( true ) < $deadline );
+			} while ( ! $ready && microtime( true ) < $deadline );
 			if ( ! $ready ) { exit( 1 ); }
 		}
 
