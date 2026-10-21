@@ -308,9 +308,9 @@ assert_lane_capabilities() {
 }
 
 assert_fixture_listeners() {
-	"${timeout_command}" --signal=TERM --kill-after=2 30 docker compose \
+	"${timeout_command}" --signal=TERM --kill-after=3 75 docker compose \
 		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
-		$deadline = microtime( true ) + 20;
+		$deadline = microtime( true ) + 60;
 		$connect = static function ( string $target, $context = null ) use ( $deadline ) {
 			do {
 				$socket = is_resource( $context )
