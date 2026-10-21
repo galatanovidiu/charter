@@ -307,49 +307,30 @@ assert_lane_capabilities() {
 	scan_private_file "${output}"
 }
 
-assert_fixture_listeners() {
-	"${timeout_command}" --signal=TERM --kill-after=3 75 docker compose \
+assert_fixture_plain_listener() {
+	local target=$1
+
+	"${timeout_command}" --signal=TERM --kill-after=3 40 docker compose \
 		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
-		$deadline = microtime( true ) + 60;
-		$connect = static function ( string $target, $context = null ) use ( $deadline ) {
-			do {
-				$socket = is_resource( $context )
-					? @stream_socket_client( $target, $number, $message, 1, STREAM_CLIENT_CONNECT, $context )
-					: @stream_socket_client( $target, $number, $message, 1 );
-				if ( false !== $socket ) {
-					return $socket;
-				}
-				usleep( 100000 );
-			} while ( microtime( true ) < $deadline );
+		$deadline = microtime( true ) + 30;
+		do {
+			$socket = @stream_socket_client( $argv[1], $number, $message, 1 );
+			if ( false !== $socket ) {
+				fclose( $socket );
+				exit( 0 );
+			}
+			usleep( 100000 );
+		} while ( microtime( true ) < $deadline );
+		exit( 1 );
+	' "${target}"
+}
 
-			return false;
-		};
+assert_fixture_tls_listener() {
+	local target=$1
 
-		$plainTargets = array(
-			"tcp://198.17.0.53:53", "tcp://198.17.0.40:8080", "tcp://198.17.0.41:1080"
-		);
-		foreach ( $plainTargets as $target ) {
-			$socket = $connect( $target );
-			if ( false === $socket ) { exit( 1 ); }
-			fclose( $socket );
-		}
-
-		$context = stream_context_create(
-			array(
-				"ssl" => array(
-					"cafile"            => getenv( "P3_FIXTURE_CA_FILE" ),
-					"peer_name"         => "client.charter.test",
-					"verify_peer"       => true,
-					"verify_peer_name"  => true,
-					"allow_self_signed" => false,
-				),
-			)
-		);
-		$tlsTargets = array(
-			"tls://198.17.0.34:443", "tls://198.17.0.35:443",
-			"tls://198.17.0.36:443", "tls://198.18.0.10:443",
-			"tls://[2001:4860:ffff::34]:443"
-		);
+	"${timeout_command}" --signal=TERM --kill-after=3 40 docker compose \
+		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
+		$deadline = microtime( true ) + 30;
 		$request = "GET /client.json HTTP/1.1\r\n"
 			. "Host: client.charter.test\r\n"
 			. "Accept: application/json\r\n"
@@ -357,24 +338,48 @@ assert_fixture_listeners() {
 			. "Cache-Control: no-cache\r\n"
 			. "User-Agent: Charter-P3-Probe/1\r\n"
 			. "Connection: close\r\n\r\n";
-		foreach ( $tlsTargets as $target ) {
-			$ready = false;
-			do {
-				$socket = $connect( $target, $context );
-				if ( false === $socket ) { break; }
+		do {
+			$context = stream_context_create(
+				array(
+					"ssl" => array(
+						"cafile"            => getenv( "P3_FIXTURE_CA_FILE" ),
+						"peer_name"         => "client.charter.test",
+						"verify_peer"       => true,
+						"verify_peer_name"  => true,
+						"allow_self_signed" => false,
+					),
+				)
+			);
+			$socket = @stream_socket_client(
+				$argv[1],
+				$number,
+				$message,
+				1,
+				STREAM_CLIENT_CONNECT,
+				$context
+			);
+			if ( false !== $socket ) {
 				stream_set_timeout( $socket, 1 );
 				if ( strlen( $request ) === @fwrite( $socket, $request ) ) {
 					$response = @fread( $socket, 128 );
-					$ready = is_string( $response ) && str_starts_with( $response, "HTTP/1.1 200 " );
+					if ( is_string( $response ) && str_starts_with( $response, "HTTP/1.1 200 " ) ) {
+						fclose( $socket );
+						exit( 0 );
+					}
 				}
 				fclose( $socket );
-				if ( ! $ready ) { usleep( 100000 ); }
-			} while ( ! $ready && microtime( true ) < $deadline );
-			if ( ! $ready ) { exit( 1 ); }
-		}
+			}
+			usleep( 100000 );
+		} while ( microtime( true ) < $deadline );
+		exit( 1 );
+	' "${target}"
+}
 
+assert_fixture_counters_ready() {
+	"${timeout_command}" --signal=TERM --kill-after=3 15 docker compose \
+		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
 		$observed = false;
-		for ( $attempt = 0; $attempt < 30; ++$attempt ) {
+		for ( $attempt = 0; $attempt < 50; ++$attempt ) {
 			$body = @file_get_contents( getenv( "P3_FIXTURE_CONTROL_URL" ) . "/counters" );
 			$data = is_string( $body ) ? json_decode( $body, true ) : null;
 			$counters = is_array( $data ) ? ( $data["counters"] ?? null ) : null;
@@ -568,7 +573,15 @@ run_private_gate preflight compose-up static docker compose \
 	--project-name "${p3_project_name}" --file "${compose_file}" up --detach
 
 run_private_gate preflight runtime-confinement static assert_runtime_confinement
-run_private_gate preflight fixture-listeners static assert_fixture_listeners
+run_private_gate preflight fixture-listener-dns static assert_fixture_plain_listener tcp://198.17.0.53:53
+run_private_gate preflight fixture-listener-http-proxy static assert_fixture_plain_listener tcp://198.17.0.40:8080
+run_private_gate preflight fixture-listener-socks-proxy static assert_fixture_plain_listener tcp://198.17.0.41:1080
+run_private_gate preflight fixture-listener-origin static assert_fixture_tls_listener tls://198.17.0.34:443
+run_private_gate preflight fixture-listener-redirect static assert_fixture_tls_listener tls://198.17.0.35:443
+run_private_gate preflight fixture-listener-embedded static assert_fixture_tls_listener tls://198.17.0.36:443
+run_private_gate preflight fixture-listener-special static assert_fixture_tls_listener tls://198.18.0.10:443
+run_private_gate preflight fixture-listener-origin6 static assert_fixture_tls_listener 'tls://[2001:4860:ffff::34]:443'
+run_private_gate preflight fixture-listener-counters static assert_fixture_counters_ready
 run_private_gate preflight php84-capabilities wordpress-php84-direct assert_lane_capabilities wp84 8.4
 run_private_gate preflight php85-capabilities wordpress-php85-direct assert_lane_capabilities wp85 8.5
 
