@@ -310,16 +310,48 @@ assert_lane_capabilities() {
 assert_fixture_listeners() {
 	"${timeout_command}" --signal=TERM --kill-after=2 30 docker compose \
 		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
-		$targets = array(
-			"tcp://198.17.0.53:53", "tcp://198.17.0.34:443", "tcp://198.17.0.35:443",
-			"tcp://198.17.0.36:443", "tcp://198.18.0.10:443",
-			"tcp://198.17.0.40:8080", "tcp://198.17.0.41:1080", "tcp://[2001:4860:ffff::34]:443"
+		$plainTargets = array(
+			"tcp://198.17.0.53:53", "tcp://198.17.0.40:8080", "tcp://198.17.0.41:1080"
 		);
-		foreach ( $targets as $target ) {
+		foreach ( $plainTargets as $target ) {
 			$socket = @stream_socket_client( $target, $number, $message, 2 );
 			if ( false === $socket ) { exit( 1 ); }
 			fclose( $socket );
 		}
+
+		$context = stream_context_create(
+			array(
+				"ssl" => array(
+					"cafile"            => getenv( "P3_FIXTURE_CA_FILE" ),
+					"peer_name"         => "client.charter.test",
+					"verify_peer"       => true,
+					"verify_peer_name"  => true,
+					"allow_self_signed" => false,
+				),
+			)
+		);
+		$tlsTargets = array(
+			"tls://198.17.0.34:443", "tls://198.17.0.35:443",
+			"tls://198.17.0.36:443", "tls://198.18.0.10:443",
+			"tls://[2001:4860:ffff::34]:443"
+		);
+		$request = "GET /client.json HTTP/1.1\r\n"
+			. "Host: client.charter.test\r\n"
+			. "Accept: application/json\r\n"
+			. "Accept-Encoding: identity\r\n"
+			. "Cache-Control: no-cache\r\n"
+			. "User-Agent: Charter-P3-Probe/1\r\n"
+			. "Connection: close\r\n\r\n";
+		foreach ( $tlsTargets as $target ) {
+			$socket = @stream_socket_client( $target, $number, $message, 2, STREAM_CLIENT_CONNECT, $context );
+			if ( false === $socket ) { exit( 1 ); }
+			stream_set_timeout( $socket, 2 );
+			if ( strlen( $request ) !== @fwrite( $socket, $request ) ) { fclose( $socket ); exit( 1 ); }
+			$response = @fread( $socket, 128 );
+			fclose( $socket );
+			if ( ! is_string( $response ) || ! str_starts_with( $response, "HTTP/1.1 200 " ) ) { exit( 1 ); }
+		}
+
 		$observed = false;
 		for ( $attempt = 0; $attempt < 30; ++$attempt ) {
 			$body = @file_get_contents( getenv( "P3_FIXTURE_CONTROL_URL" ) . "/counters" );
