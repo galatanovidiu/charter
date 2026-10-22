@@ -326,55 +326,67 @@ assert_fixture_plain_listener() {
 }
 
 assert_fixture_tls_listener() {
-	local target=$1
+	local peer_ip=$1
 
 	"${timeout_command}" --signal=TERM --kill-after=3 40 docker compose \
 		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
 		$deadline = microtime( true ) + 30;
-		$request = "GET /client.json HTTP/1.1\r\n"
-			. "Host: client.charter.test\r\n"
-			. "Accept: application/json\r\n"
-			. "Accept-Encoding: identity\r\n"
-			. "Cache-Control: no-cache\r\n"
-			. "User-Agent: Charter-P3-Probe/1\r\n"
-			. "Connection: close\r\n\r\n";
+		$peerIp = $argv[1];
+		$packedPeerIp = inet_pton( $peerIp );
+		if ( false === $packedPeerIp || ! function_exists( "curl_init" ) ) { exit( 1 ); }
+		$resolveIp = str_contains( $peerIp, ":" ) ? "[" . $peerIp . "]" : $peerIp;
 		do {
-			$context = stream_context_create(
-				array(
-					"ssl" => array(
-						"cafile"            => getenv( "P3_FIXTURE_CA_FILE" ),
-						"peer_name"         => "client.charter.test",
-						"verify_peer"       => true,
-						"verify_peer_name"  => true,
-						"allow_self_signed" => false,
-					),
-				)
-			);
 			$remaining = $deadline - microtime( true );
 			if ( $remaining <= 0 ) { break; }
-			$socket = @stream_socket_client(
-				$argv[1],
-				$number,
-				$message,
-				max( 0.1, min( 10.0, $remaining ) ),
-				STREAM_CLIENT_CONNECT,
-				$context
+			$bodyBytes = 0;
+			$peerMatched = false;
+			$handle = curl_init( "https://client.charter.test/client.json" );
+			if ( false === $handle ) { exit( 1 ); }
+			$options = array(
+				CURLOPT_HTTPGET        => true,
+				CURLOPT_HTTPHEADER     => array( "Accept: application/json", "Accept-Encoding: identity", "Cache-Control: no-cache", "User-Agent: Charter-P3-Probe/1" ),
+				CURLOPT_CONNECTTIMEOUT => max( 1, min( 10, (int) ceil( $remaining ) ) ),
+				CURLOPT_TIMEOUT        => max( 1, min( 15, (int) ceil( $remaining ) ) ),
+				CURLOPT_FOLLOWLOCATION => false,
+				CURLOPT_MAXREDIRS      => 0,
+				CURLOPT_SSL_VERIFYPEER => true,
+				CURLOPT_SSL_VERIFYHOST => 2,
+				CURLOPT_CAINFO         => getenv( "P3_FIXTURE_CA_FILE" ),
+				CURLOPT_PROXY          => "",
+				CURLOPT_NOPROXY        => "*",
+				CURLOPT_RESOLVE        => array( "client.charter.test:443:" . $resolveIp ),
+				CURLOPT_FRESH_CONNECT  => true,
+				CURLOPT_FORBID_REUSE   => true,
+				CURLOPT_PREREQFUNCTION => static function ( CurlHandle $unused, string $primaryIp, string $localIp, int $primaryPort, int $localPort ) use ( $packedPeerIp, &$peerMatched ): int {
+					unset( $unused, $localIp, $localPort );
+					$packedPrimary = inet_pton( $primaryIp );
+					$peerMatched = false !== $packedPrimary && $packedPeerIp === $packedPrimary && 443 === $primaryPort;
+					return $peerMatched ? CURL_PREREQFUNC_OK : CURL_PREREQFUNC_ABORT;
+				},
+				CURLOPT_HEADERFUNCTION => static function ( CurlHandle $unused, string $line ): int {
+					unset( $unused );
+					return strlen( $line ) <= 8192 ? strlen( $line ) : 0;
+				},
+				CURLOPT_WRITEFUNCTION => static function ( CurlHandle $unused, string $chunk ) use ( &$bodyBytes ): int {
+					unset( $unused );
+					$length = strlen( $chunk );
+					if ( $bodyBytes + $length > 5120 ) { return 0; }
+					$bodyBytes += $length;
+					return $length;
+				},
 			);
-			if ( false !== $socket ) {
-				stream_set_timeout( $socket, 3 );
-				if ( strlen( $request ) === @fwrite( $socket, $request ) ) {
-					$response = @fread( $socket, 128 );
-					if ( is_string( $response ) && str_starts_with( $response, "HTTP/1.1 200 " ) ) {
-						fclose( $socket );
-						exit( 0 );
-					}
-				}
-				fclose( $socket );
-			}
+			if ( defined( "CURLOPT_PROTOCOLS" ) && defined( "CURLPROTO_HTTPS" ) ) { $options[CURLOPT_PROTOCOLS] = CURLPROTO_HTTPS; }
+			if ( ! curl_setopt_array( $handle, $options ) ) { exit( 1 ); }
+			$ok = curl_exec( $handle );
+			$status = (int) curl_getinfo( $handle, CURLINFO_RESPONSE_CODE );
+			$verifyResult = (int) curl_getinfo( $handle, CURLINFO_SSL_VERIFYRESULT );
+			$redirects = (int) curl_getinfo( $handle, CURLINFO_REDIRECT_COUNT );
+			unset( $handle );
+			if ( false !== $ok && 200 === $status && 0 === $verifyResult && 0 === $redirects && $peerMatched && $bodyBytes > 0 ) { exit( 0 ); }
 			usleep( 100000 );
 		} while ( microtime( true ) < $deadline );
 		exit( 1 );
-	' "${target}"
+	' "${peer_ip}"
 }
 
 assert_fixture_counters_ready() {
@@ -578,11 +590,11 @@ run_private_gate preflight runtime-confinement static assert_runtime_confinement
 run_private_gate preflight fixture-listener-dns static assert_fixture_plain_listener tcp://198.17.0.53:53
 run_private_gate preflight fixture-listener-http-proxy static assert_fixture_plain_listener tcp://198.17.0.40:8080
 run_private_gate preflight fixture-listener-socks-proxy static assert_fixture_plain_listener tcp://198.17.0.41:1080
-run_private_gate preflight fixture-listener-origin static assert_fixture_tls_listener tls://198.17.0.34:443
-run_private_gate preflight fixture-listener-redirect static assert_fixture_tls_listener tls://198.17.0.35:443
-run_private_gate preflight fixture-listener-embedded static assert_fixture_tls_listener tls://198.17.0.36:443
-run_private_gate preflight fixture-listener-special static assert_fixture_tls_listener tls://198.18.0.10:443
-run_private_gate preflight fixture-listener-origin6 static assert_fixture_tls_listener 'tls://[2001:4860:ffff::34]:443'
+run_private_gate preflight fixture-listener-origin static assert_fixture_tls_listener 198.17.0.34
+run_private_gate preflight fixture-listener-redirect static assert_fixture_tls_listener 198.17.0.35
+run_private_gate preflight fixture-listener-embedded static assert_fixture_tls_listener 198.17.0.36
+run_private_gate preflight fixture-listener-special static assert_fixture_tls_listener 198.18.0.10
+run_private_gate preflight fixture-listener-origin6 static assert_fixture_tls_listener 2001:4860:ffff::34
 run_private_gate preflight fixture-listener-counters static assert_fixture_counters_ready
 run_private_gate preflight php84-capabilities wordpress-php84-direct assert_lane_capabilities wp84 8.4
 run_private_gate preflight php85-capabilities wordpress-php85-direct assert_lane_capabilities wp85 8.5
