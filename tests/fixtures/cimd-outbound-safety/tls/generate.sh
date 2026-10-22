@@ -39,6 +39,9 @@ openssl x509 -req -sha256 \
 	-out "${cert_dir}/server.crt" \
 	-days 1 >/dev/null 2>&1
 
-chmod 600 "${cert_dir}"/*.key
-chmod 644 "${cert_dir}"/*.crt
+# The disposable server key is bind-mounted read-only into the isolated TLS
+# fixtures. The enclosing host directory remains mode 0700, while this mode
+# also works when Docker remaps container root away from the host file owner.
+chmod 600 "${cert_dir}/ca.key"
+chmod 644 "${cert_dir}/server.key" "${cert_dir}"/*.crt
 find "${cert_dir}" -type f \( -name 'ca.key' -o -name '*.csr' -o -name '*.srl' \) -delete
