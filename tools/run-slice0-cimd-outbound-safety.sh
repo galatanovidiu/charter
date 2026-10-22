@@ -19,6 +19,7 @@ p3_state_dir="${p3_runtime_dir}/state"
 p3_cert_dir="${p3_runtime_dir}/certs"
 p3_wordpress_root="${p3_runtime_dir}/wordpress"
 p3_project_name="charter-p3-$$-${RANDOM}"
+p3_preflight_only="${P3_FIXTURE_PREFLIGHT_ONLY:-false}"
 p3_compose_started=false
 p3_cleanup_complete=false
 p3_failure_emitted=false
@@ -389,6 +390,24 @@ assert_fixture_tls_listener() {
 	' "${peer_ip}"
 }
 
+assert_fixture_certificate_pair() {
+	"${timeout_command}" --signal=TERM --kill-after=3 15 docker compose \
+		--project-name "${p3_project_name}" --file "${compose_file}" exec -T origin php -r '
+		$certificate = @file_get_contents( "/certs/server.crt" );
+		$privateKey = @file_get_contents( "/certs/server.key" );
+		if ( ! is_string( $certificate ) || ! is_string( $privateKey ) ) { exit( 1 ); }
+		$certificateResource = @openssl_x509_read( $certificate );
+		$privateKeyResource = @openssl_pkey_get_private( $privateKey );
+		exit(
+			false !== $certificateResource
+			&& false !== $privateKeyResource
+			&& openssl_x509_check_private_key( $certificateResource, $privateKeyResource )
+				? 0
+				: 1
+		);
+	'
+}
+
 assert_fixture_counters_ready() {
 	"${timeout_command}" --signal=TERM --kill-after=3 15 docker compose \
 		--project-name "${p3_project_name}" --file "${compose_file}" exec -T wp84 php -r '
@@ -559,6 +578,12 @@ if [[ -z "${timeout_command}" ]]; then
 	exit 1
 fi
 
+if [[ false != "${p3_preflight_only}" && true != "${p3_preflight_only}" ]]; then
+	p3_failure_emitted=true
+	emit_record failed preflight preflight-mode static capability-unavailable 0
+	exit 1
+fi
+
 for command_name in curl docker grep openssl php unzip; do
 	if ! command -v "${command_name}" >/dev/null 2>&1; then
 		p3_failure_emitted=true
@@ -577,10 +602,12 @@ run_private_gate preflight state-permissions static chmod 666 "${p3_state_dir}"/
 run_private_gate preflight compose-render static render_compose_config
 php "${validator}" --compose-config "${p3_private_dir}/compose.json"
 
-run_private_gate pure pure-matrix pure-php \
-	php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-unit.php \
-	--do-not-cache-result --exclude-group=p3-hostile tests/Integration/CimdOutboundSafety
-run_private_gate retained p2-protected-request wordpress-p2 run_retained_p2_protected_request
+if [[ false == "${p3_preflight_only}" ]]; then
+	run_private_gate pure pure-matrix pure-php \
+		php vendor/bin/phpunit --configuration=phpunit.xml.dist --bootstrap=tests/bootstrap-unit.php \
+		--do-not-cache-result --exclude-group=p3-hostile tests/Integration/CimdOutboundSafety
+	run_private_gate retained p2-protected-request wordpress-p2 run_retained_p2_protected_request
+fi
 
 p3_compose_started=true
 run_private_gate preflight compose-up static docker compose \
@@ -590,12 +617,21 @@ run_private_gate preflight runtime-confinement static assert_runtime_confinement
 run_private_gate preflight fixture-listener-dns static assert_fixture_plain_listener tcp://198.17.0.53:53
 run_private_gate preflight fixture-listener-http-proxy static assert_fixture_plain_listener tcp://198.17.0.40:8080
 run_private_gate preflight fixture-listener-socks-proxy static assert_fixture_plain_listener tcp://198.17.0.41:1080
+run_private_gate preflight fixture-origin-certificate-pair static assert_fixture_certificate_pair
+run_private_gate preflight fixture-origin-tcp static assert_fixture_plain_listener tcp://198.17.0.34:443
 run_private_gate preflight fixture-listener-origin static assert_fixture_tls_listener 198.17.0.34
 run_private_gate preflight fixture-listener-redirect static assert_fixture_tls_listener 198.17.0.35
 run_private_gate preflight fixture-listener-embedded static assert_fixture_tls_listener 198.17.0.36
 run_private_gate preflight fixture-listener-special static assert_fixture_tls_listener 198.18.0.10
 run_private_gate preflight fixture-listener-origin6 static assert_fixture_tls_listener 2001:4860:ffff::34
 run_private_gate preflight fixture-listener-counters static assert_fixture_counters_ready
+
+if [[ true == "${p3_preflight_only}" ]]; then
+	cleanup_runtime 0
+	emit_record passed summary p3-fixture-preflight summary none 0
+	exit 0
+fi
+
 run_private_gate preflight php84-capabilities wordpress-php84-direct assert_lane_capabilities wp84 8.4
 run_private_gate preflight php85-capabilities wordpress-php85-direct assert_lane_capabilities wp85 8.5
 
