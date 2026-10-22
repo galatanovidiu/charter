@@ -350,16 +350,18 @@ assert_fixture_tls_listener() {
 					),
 				)
 			);
+			$remaining = $deadline - microtime( true );
+			if ( $remaining <= 0 ) { break; }
 			$socket = @stream_socket_client(
 				$argv[1],
 				$number,
 				$message,
-				1,
+				max( 0.1, min( 10.0, $remaining ) ),
 				STREAM_CLIENT_CONNECT,
 				$context
 			);
 			if ( false !== $socket ) {
-				stream_set_timeout( $socket, 1 );
+				stream_set_timeout( $socket, 3 );
 				if ( strlen( $request ) === @fwrite( $socket, $request ) ) {
 					$response = @fread( $socket, 128 );
 					if ( is_string( $response ) && str_starts_with( $response, "HTTP/1.1 200 " ) ) {
