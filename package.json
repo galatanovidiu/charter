@@ -56,15 +56,15 @@
 		"format:check": "prettier --no-error-on-unmatched-pattern --check \".github/**/*.{yml,yaml}\" \"assets/**/*.js\" \"tests/JavaScript/**/*.mjs\" \".wp-env*.json\" \"*.json\" \"*.md\" \"docs/**/*.md\" \"webpack.config.js\""
 	},
 	"devDependencies": {
-		"@babel/core": "^8.0.7",
+		"@babel/core": "^8.0.9",
 		"@babel/preset-env": "^8.0.7",
 		"@babel/preset-react": "^8.0.1",
-		"@wordpress/env": "^11.12.0",
-		"@wordpress/dependency-extraction-webpack-plugin": "^6.57.0",
-		"@wordpress/prettier-config": "^4.57.0",
+		"@wordpress/env": "^12.0.0",
+		"@wordpress/dependency-extraction-webpack-plugin": "^7.0.0",
+		"@wordpress/prettier-config": "^5.0.0",
 		"babel-loader": "^10.1.1",
 		"prettier": "^3.9.10",
-		"webpack": "^5.112.0",
+		"webpack": "^5.112.2",
 		"webpack-cli": "^7.2.3"
 	},
 	"overrides": {
